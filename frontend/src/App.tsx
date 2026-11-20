@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   ArrowUpRight,
   BarChart3,
   BookOpenCheck,
-  Bookmark,
   BriefcaseBusiness,
   Check,
   ChevronDown,
@@ -41,47 +41,50 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AssessmentCatalogPage, AssessmentExamPage, AssessmentResultsPage } from "./AssessmentFlow";
 import { AuthoringPage } from "./AuthoringFlow";
 import { PageHeading } from "./components/PageHeading";
 import { allAssessmentQuestions, assessmentQuestionBanks } from "./data/assessmentQuestionBanks";
 import {
   assessments,
-  companies,
-  isDemoData,
-  overview,
-  performanceTrend,
   questions,
-  recommendations,
-  sectionScores,
   type AssessmentQuestion,
 } from "./data/mockData";
+import {
+  listAssessments,
+  startAssessment,
+  type AssessmentSummary,
+} from "./services/assessmentApi";
+import {
+  candidateApiErrorMessage,
+  getCandidatePerformance,
+  getCandidateRecommendations,
+  getPracticeTopics,
+  startPracticeSession,
+  type CandidateRecommendation,
+} from "./services/candidateApi";
 import {
   completePreviewAttempt,
   getPreviewDurationMinutes,
   getPreviewQuestionCount,
   getSecondsRemaining,
-  loadPreviewPracticeSession,
   loadPreviewAttempt,
   loadPreviewResult,
-  sampleNewQuestionSet,
   savePreviewAttempt,
-  savePreviewPracticeSession,
   startPreviewAttempt,
   type PreviewAttempt,
   type PreviewAttemptResult,
-  type PreviewPracticeSession,
 } from "./services/previewAssessment";
 
 const navGroups = [
   {
     label: "WORKSPACE",
     links: [
-      { to: "/", label: "Dashboard", icon: LayoutDashboard },
+      { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { to: "/aptitude", label: "Aptitude assessment", icon: FileQuestion },
       { to: "/practice", label: "Practice zone", icon: BookOpenCheck },
-      { to: "/companies", label: "Company mock tests", icon: BriefcaseBusiness },
+      { to: "/mock-tests", label: "Company mock tests", icon: BriefcaseBusiness },
     ],
   },
   {
@@ -93,17 +96,16 @@ const navGroups = [
   },
   {
     label: "ADMINISTRATION",
-    links: [{ to: "/aptitude/manage", label: "Assessment studio", icon: Settings }],
+    links: [{ to: "/studio", label: "Assessment studio", icon: Settings }],
   },
 ];
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const location = useLocation();
-  const isAssessmentRoute = location.pathname.startsWith("/aptitude")
-    || location.pathname.startsWith("/exam/")
-    || location.pathname.startsWith("/results/");
-
+  const recommendationsQuery = useQuery({
+    queryKey: ["candidate-recommendations"],
+    queryFn: getCandidateRecommendations,
+  });
   return (
     <div className="app-shell">
       {sidebarOpen && <button className="mobile-backdrop" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
@@ -130,7 +132,7 @@ function App() {
                   className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}
                 >
                   <Icon size={18} strokeWidth={1.8} /><span>{label}</span>
-                  {label === "Recommendations" && <span className="nav-count">3</span>}
+                  {label === "Recommendations" && recommendationsQuery.data?.count ? <span className="nav-count">{recommendationsQuery.data.count}</span> : null}
                 </NavLink>
               ))}
             </div>
@@ -157,17 +159,19 @@ function App() {
             <div className="top-avatar" aria-label="Anonymous candidate">AN</div>
           </div>
         </header>
-        {isDemoData && !isAssessmentRoute && <div className="demo-banner"><Sparkles size={14} /><span>Preview workspace</span><span className="demo-separator">·</span><span>Sample data on this screen is for demonstration and is not connected to a live account.</span></div>}
         <main className="page-content">
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/aptitude" element={<AssessmentCatalogPage />} />
             <Route path="/exam/:assessmentId" element={<AssessmentExamPage />} />
             <Route path="/results/:assessmentId" element={<AssessmentResultsPage />} />
             <Route path="/aptitude/manage" element={<AuthoringPage />} />
+            <Route path="/studio" element={<AuthoringPage />} />
             <Route path="/admin/questions" element={<AuthoringPage />} />
             <Route path="/practice" element={<PracticePage />} />
             <Route path="/performance" element={<PerformancePage />} />
+            <Route path="/mock-tests" element={<CompaniesPage />} />
             <Route path="/companies" element={<CompaniesPage />} />
             <Route path="/recommendations" element={<RecommendationsPage />} />
             <Route path="*" element={<NotFound />} />
@@ -179,31 +183,56 @@ function App() {
 }
 
 function Dashboard() {
+  const performanceQuery = useQuery({
+    queryKey: ["candidate-performance"],
+    queryFn: getCandidatePerformance,
+  });
+  const recommendationsQuery = useQuery({
+    queryKey: ["candidate-recommendations"],
+    queryFn: getCandidateRecommendations,
+  });
+  if (performanceQuery.isLoading) return <WorkspaceLoading message="Loading your assessment progress…" />;
+  if (performanceQuery.isError) {
+    return <WorkspaceError message={candidateApiErrorMessage(performanceQuery.error)} onRetry={() => void performanceQuery.refetch()} />;
+  }
+  const performance = performanceQuery.data;
+  if (!performance) return <WorkspaceError message="The performance service returned no summary." />;
+  const trend = performance.trend.map((item) => ({
+    date: new Date(item.submitted_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    score: item.score_percent,
+    accuracy: item.accuracy_percent,
+  }));
+  const topicSummary = [...performance.topics]
+    .sort((left, right) => left.accuracy_percent - right.accuracy_percent)
+    .slice(0, 5);
+  const colors = ["#1a8fc4", "#48a9d1", "#52b788", "#f0a64b", "#7b78d2"];
+  const practiceHours = Math.floor(performance.practice_time_seconds / 3600);
+  const practiceMinutes = Math.floor((performance.practice_time_seconds % 3600) / 60);
   return (
     <>
-      <PageHeading eyebrow="FRIDAY, 20 NOVEMBER" title="Good afternoon, Arun" description="A little focused practice today can make a big difference on placement day." action={<Link className="button button-primary" to="/aptitude"><Target size={17} /> Take an assessment</Link>} />
+      <PageHeading eyebrow="YOUR PLACEMENT READINESS" title="Measure your readiness" description="Your dashboard is based on your completed, server-scored assessment and practice attempts." action={<Link className="button button-primary" to="/aptitude"><Target size={17} /> Take an assessment</Link>} />
       <div className="readiness-banner">
-        <div className="readiness-copy"><span className="banner-label"><Sparkles size={15} /> YOUR PLACEMENT READINESS</span><div className="readiness-number">{overview.readiness}<span>/100</span></div><p>You’re building a strong foundation. A little more focus on data interpretation will move you forward.</p><Link to="/performance" className="banner-link">See your full readiness report <ArrowRight size={15} /></Link></div>
-        <div className="readiness-art" aria-label="Readiness score 68 out of 100">
-          <div className="score-ring"><div><strong>{overview.readiness}</strong><span>READINESS</span></div></div>
-          <div className="ring-caption"><span className="ring-dot" /> Developing <span className="ring-divider">·</span> Keep it up</div>
-          <div className="floating-chip chip-one"><ArrowUpRight size={15} /> +12 pts</div>
-          <div className="floating-chip chip-two"><Trophy size={14} /> 8 tests done</div>
+        <div className="readiness-copy"><span className="banner-label"><Sparkles size={15} /> YOUR PLACEMENT READINESS</span><div className="readiness-number">{performance.readiness_score}<span>/100</span></div><p>{performance.completed_attempts ? "Keep building consistency across timed assessments and focused practice." : "Complete a verified timed assessment to establish your baseline."}</p><Link to="/performance" className="banner-link">See your full readiness report <ArrowRight size={15} /></Link></div>
+        <div className="readiness-art" aria-label={`Readiness score ${performance.readiness_score} out of 100`}>
+          <div className="score-ring"><div><strong>{performance.readiness_score}</strong><span>READINESS</span></div></div>
+          <div className="ring-caption"><span className="ring-dot" /> {performance.completed_attempts ? "In progress" : "Not measured"} <span className="ring-divider">·</span> Server-scored</div>
+          <div className="floating-chip chip-one"><ArrowUpRight size={15} /> {performance.average_accuracy_percent}% accuracy</div>
+          <div className="floating-chip chip-two"><Trophy size={14} /> {performance.completed_attempts} tests done</div>
         </div>
       </div>
       <section className="metric-grid" aria-label="Your assessment overview">
-        <MetricCard icon={<FileQuestion size={18} />} label="Tests completed" value={`${overview.testsCompleted}`} note="2 this month" tone="blue" />
-        <MetricCard icon={<Target size={18} />} label="Average accuracy" value={`${overview.accuracy}%`} note="Across all attempts" tone="green" />
-        <MetricCard icon={<Timer size={18} />} label="Average speed" value={overview.avgSpeed} note="Per question" tone="purple" />
-        <MetricCard icon={<Clock3 size={18} />} label="Practice time" value={overview.practiceTime} note="You’re showing up!" tone="amber" />
+        <MetricCard icon={<FileQuestion size={18} />} label="Tests completed" value={`${performance.completed_attempts}`} note="Submitted attempts" tone="blue" />
+        <MetricCard icon={<Target size={18} />} label="Average accuracy" value={`${performance.average_accuracy_percent}%`} note="Across answered questions" tone="green" />
+        <MetricCard icon={<Timer size={18} />} label="Average speed" value={`${Math.round(performance.average_time_seconds)} sec`} note="Per question" tone="purple" />
+        <MetricCard icon={<Clock3 size={18} />} label="Practice time" value={`${practiceHours}h ${practiceMinutes}m`} note="Completed timed practice" tone="amber" />
       </section>
       <div className="content-grid dashboard-grid">
         <section className="panel trend-panel">
-          <div className="panel-heading"><div><h2>Your progress over time</h2><p>A steady upward trend. Nice work!</p></div><Link to="/performance" className="text-link">View report <ArrowRight size={14} /></Link></div>
+          <div className="panel-heading"><div><h2>Your progress over time</h2><p>Results from your completed attempts.</p></div><Link to="/performance" className="text-link">View report <ArrowRight size={14} /></Link></div>
           <div className="chart-legend"><span><i className="legend-dot blue-dot" /> Readiness score</span><span><i className="legend-dot green-dot" /> Accuracy</span></div>
           <div className="trend-chart">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={performanceTrend} margin={{ top: 8, right: 4, bottom: 0, left: -18 }}>
+              <AreaChart data={trend} margin={{ top: 8, right: 4, bottom: 0, left: -18 }}>
                 <defs><linearGradient id="scoreFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#1a8fc4" stopOpacity={0.17} /><stop offset="100%" stopColor="#1a8fc4" stopOpacity={0} /></linearGradient></defs>
                 <CartesianGrid stroke="#edf1f5" vertical={false} />
                 <XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "#8792a0", fontSize: 11 }} dy={9} />
@@ -214,29 +243,48 @@ function Dashboard() {
               </AreaChart>
             </ResponsiveContainer>
           </div>
-          <div className="trend-insight"><span className="insight-icon"><ArrowUpRight size={16} /></span><span><strong>12 points up</strong> since your first assessment</span></div>
+          {trend.length === 0 && <p className="workspace-empty-note">Your trend will appear after your first completed assessment.</p>}
         </section>
         <section className="panel section-panel">
-          <div className="panel-heading"><div><h2>Section snapshot</h2><p>Where you’re shining and where to focus</p></div><Link to="/performance" className="text-link">Details <ArrowRight size={14} /></Link></div>
-          <div className="section-list">{sectionScores.map((item) => <div className="section-score" key={item.name}><div className="section-score-top"><span>{item.name}</span><strong>{item.score}%</strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${item.score}%`, background: item.color }} /></div></div>)}</div>
-          <div className="section-insight"><Lightbulb size={16} /><span><strong>Data interpretation</strong> is a good place to focus next.</span></div>
+          <div className="panel-heading"><div><h2>Topic snapshot</h2><p>Accuracy from your completed attempts</p></div><Link to="/performance" className="text-link">Details <ArrowRight size={14} /></Link></div>
+          <div className="section-list">{topicSummary.map((item, index) => <div className="section-score" key={item.topic}><div className="section-score-top"><span>{item.topic}</span><strong>{item.accuracy_percent}%</strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${item.accuracy_percent}%`, background: colors[index] }} /></div></div>)}</div>
+          {topicSummary.length === 0 && <p className="workspace-empty-note">Topic insights appear after you complete an assessment.</p>}
         </section>
       </div>
       <div className="content-grid lower-grid">
         <section className="panel recommendations-panel">
           <div className="panel-heading"><div><span className="section-kicker"><Sparkles size={14} /> YOUR NEXT STEPS</span><h2>Picked for your progress</h2></div><Link to="/recommendations" className="text-link">See all <ArrowRight size={14} /></Link></div>
-          <div className="recommendation-list">{recommendations.slice(0, 2).map((item, index) => <Link className="recommendation-row" to="/practice" key={item.title}><span className={`rec-icon ${item.tone}`}>{index === 0 ? <Timer size={17} /> : <BarChart3 size={17} />}</span><span className="rec-copy"><strong>{item.title}</strong><span>{item.detail}</span><small>{item.meta}</small></span><ArrowRight size={17} className="row-arrow" /></Link>)}</div>
+          {recommendationsQuery.data?.items.slice(0, 2).map((item) => <RecommendationRow item={item} key={item.id} />)}
+          {recommendationsQuery.isError && <p className="assessment-inline-error" role="alert">{candidateApiErrorMessage(recommendationsQuery.error)}</p>}
+          {recommendationsQuery.data?.count === 0 && <p className="workspace-empty-note">You’re all caught up. Complete another attempt for updated guidance.</p>}
         </section>
         <section className="panel continue-panel">
-          <div className="continue-top"><span className="continue-icon"><BookOpenCheck size={19} /></span><span className="continue-label">PICK UP WHERE YOU LEFT OFF</span></div>
-          <h2>Strengthen your fundamentals</h2><p>Your last session: Percentages &amp; ratios</p>
-          <div className="continue-progress"><div className="progress-track"><div className="progress-fill" style={{ width: "62%" }} /></div><span>62%</span></div>
-          <Link className="button button-outline continue-button" to="/practice">Continue learning <ArrowRight size={15} /></Link>
+          <div className="continue-top"><span className="continue-icon"><BookOpenCheck size={19} /></span><span className="continue-label">PRACTISE WITH PURPOSE</span></div>
+          <h2>Turn insights into progress</h2><p>Use verified questions from the published bank to build a focused timed set.</p>
+          <Link className="button button-outline continue-button" to="/practice">Open Practice zone <ArrowRight size={15} /></Link>
         </section>
       </div>
-      <section className="journey-strip"><span className="journey-icon"><Trophy size={19} /></span><span><strong>You’ve improved 12 points</strong><small>Every practice session is adding up. Keep your momentum going.</small></span><Link to="/performance" className="text-link">Your journey <ArrowRight size={14} /></Link></section>
+      <section className="journey-strip"><span className="journey-icon"><Trophy size={19} /></span><span><strong>{performance.completed_attempts} completed attempts</strong><small>Your trend and recommendations update from each submitted session.</small></span><Link to="/performance" className="text-link">Your journey <ArrowRight size={14} /></Link></section>
     </>
   );
+}
+
+function WorkspaceLoading({ message }: { message: string }) {
+  return <div className="panel assessment-state" role="status"><span className="loading-spinner" />{message}</div>;
+}
+
+function WorkspaceError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return <div className="panel assessment-state error-state" role="alert"><strong>Workspace data unavailable</strong><span>{message}</span>{onRetry && <button className="button button-outline" onClick={onRetry}>Try again</button>}</div>;
+}
+
+function RecommendationRow({ item }: { item: CandidateRecommendation }) {
+  const href = item.assessment_slug
+    ? "/aptitude"
+    : item.topic
+      ? `/practice?topic=${encodeURIComponent(item.topic)}`
+      : "/practice";
+  const Icon = item.kind === "time_management" ? Timer : item.kind === "progression" ? BriefcaseBusiness : Target;
+  return <Link className="recommendation-row" to={href}><span className="rec-icon blue"><Icon size={17} /></span><span className="rec-copy"><strong>{item.title}</strong><span>{item.description}</span><small>{item.estimated_minutes ? `${item.estimated_minutes} min` : item.action_label}</small></span><ArrowRight size={17} className="row-arrow" /></Link>;
 }
 
 function MetricCard({ icon, label, value, note, tone }: { icon: React.ReactNode; label: string; value: string; note: string; tone: string }) {
@@ -409,157 +457,120 @@ export function PreviewResultsPage() {
 }
 
 function PracticePage() {
-  const [storedSession] = useState(loadPreviewPracticeSession);
-  const [topic, setTopic] = useState(storedSession?.topic ?? "All topics");
-  const [difficulty, setDifficulty] = useState(storedSession?.difficulty ?? "All levels");
-  const [questionLimit, setQuestionLimit] = useState(storedSession?.questionLimit ?? 10);
-  const questionsById = new Map(questions.map((item) => [item.id, item]));
-  const [questionSet, setQuestionSet] = useState<AssessmentQuestion[]>(() => storedSession
-    ? storedSession.questionIds
-      .map((questionId) => questionsById.get(questionId))
-      .filter((item): item is AssessmentQuestion => item !== undefined)
-    : []);
-  const [activeIndex, setActiveIndex] = useState(storedSession?.activeIndex ?? 0);
-  const [choice, setChoice] = useState<number | null>(storedSession?.choice ?? null);
-  const [checked, setChecked] = useState(storedSession?.checked ?? false);
-  const [bookmarked, setBookmarked] = useState<number[]>(storedSession?.bookmarked ?? []);
-  const [finished, setFinished] = useState(storedSession?.finished ?? false);
-  const [timedOut, setTimedOut] = useState(storedSession?.timedOut ?? false);
-  const [deadlineAt, setDeadlineAt] = useState<number | null>(storedSession?.deadlineAt ?? null);
-  const [clockNow, setClockNow] = useState(Date.now);
-  const availableQuestions = questions.filter((item) => (topic === "All topics" || item.topic === topic) && (difficulty === "All levels" || item.difficulty === difficulty));
-  const question = finished ? undefined : questionSet[activeIndex];
-  const remainingSeconds = deadlineAt === null ? null : getSecondsRemaining(deadlineAt, clockNow);
-  const questionsPractised = finished && !timedOut
-    ? questionSet.length
-    : Math.min(activeIndex + (checked ? 1 : 0), questionSet.length);
-  const progressPercent = questionSet.length === 0
-    ? 0
-    : Math.min(100, (questionsPractised / questionSet.length) * 100);
-  const formattedTime = remainingSeconds === null
-    ? ""
-    : `${String(Math.floor(remainingSeconds / 60)).padStart(2, "0")}:${String(remainingSeconds % 60).padStart(2, "0")}`;
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const topicsQuery = useQuery({ queryKey: ["practice-topics"], queryFn: getPracticeTopics });
+  const [topic, setTopic] = useState(searchParams.get("topic") ?? "");
+  const [questionCount, setQuestionCount] = useState(10);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const topics = topicsQuery.data ?? [];
+  const chosenTopics = topic ? [topic] : topics.map((item) => item.topic);
 
-  useEffect(() => {
-    if (deadlineAt === null || finished) return;
-    const syncClock = () => setClockNow(Date.now());
-    const timer = window.setInterval(syncClock, 1000);
-    window.addEventListener("focus", syncClock);
-    document.addEventListener("visibilitychange", syncClock);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", syncClock);
-      document.removeEventListener("visibilitychange", syncClock);
-    };
-  }, [deadlineAt, finished]);
-
-  useEffect(() => {
-    if (deadlineAt !== null && !finished && remainingSeconds === 0) {
-      setTimedOut(true);
-      setFinished(true);
+  const startPractice = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      const attempt = await startPracticeSession({ topics: chosenTopics, question_count: questionCount });
+      navigate(`/exam/${attempt.id}`);
+    } catch (startError) {
+      setError(candidateApiErrorMessage(startError));
+    } finally {
+      setStarting(false);
     }
-  }, [deadlineAt, finished, remainingSeconds]);
-
-  useEffect(() => {
-    if (deadlineAt === null || questionSet.length === 0) return;
-    const session: PreviewPracticeSession = {
-      questionIds: questionSet.map((item) => item.id),
-      topic,
-      difficulty,
-      questionLimit,
-      activeIndex,
-      choice,
-      checked,
-      bookmarked,
-      deadlineAt,
-      finished,
-      timedOut,
-    };
-    savePreviewPracticeSession(session);
-  }, [activeIndex, bookmarked, checked, choice, deadlineAt, difficulty, finished, questionLimit, questionSet, timedOut, topic]);
-
-  const next = () => {
-    if (activeIndex + 1 >= questionSet.length) setFinished(true);
-    else setActiveIndex((value) => value + 1);
-    setChoice(null);
-    setChecked(false);
   };
-  const startPractice = () => {
-    const selectedQuestions = sampleNewQuestionSet("practice", availableQuestions, questionLimit);
-    setQuestionSet(selectedQuestions);
-    const startedAt = Date.now();
-    setDeadlineAt(startedAt + selectedQuestions.length * 60 * 1000);
-    setClockNow(startedAt);
-    setActiveIndex(0);
-    setChecked(false);
-    setChoice(null);
-    setFinished(false);
-    setTimedOut(false);
-  };
+
   return <>
-    <PageHeading eyebrow="PRACTISE WITH PURPOSE" title="Practice zone" description="Choose a topic, practise against the clock, and get feedback as you go." />
+    <PageHeading eyebrow="PRACTISE WITH PURPOSE" title="Practice zone" description="Choose one or more published topics. Your timed practice attempt is generated and scored by the assessment service." />
     <div className="practice-controls panel">
-      <label>Topic<select value={topic} onChange={(event) => setTopic(event.target.value)}><option>All topics</option>{Array.from(new Set(questions.map((item) => item.topic))).map((item) => <option key={item}>{item}</option>)}</select></label>
-      <label>Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}><option>All levels</option><option>Easy</option><option>Medium</option><option>Hard</option></select></label>
-      <label>Questions<select value={questionLimit} onChange={(event) => setQuestionLimit(Number(event.target.value))}><option value={5}>5 questions</option><option value={10}>10 questions</option><option value={20}>20 questions</option></select></label>
-      <button className="button button-primary" disabled={availableQuestions.length === 0} onClick={startPractice}>Start timed practice <ArrowRight size={16} /></button>
-      <span className="practice-timing-note"><Clock3 size={14} /> 1 minute per question</span>
+      <label>Topic<select value={topic} onChange={(event) => setTopic(event.target.value)} disabled={topicsQuery.isLoading}><option value="">All available topics</option>{topics.map((item) => <option key={item.topic} value={item.topic}>{item.topic} ({item.total_count} banked)</option>)}</select></label>
+      <label>Questions<select value={questionCount} onChange={(event) => setQuestionCount(Number(event.target.value))}><option value={5}>5 questions</option><option value={10}>10 questions</option><option value={20}>20 questions</option></select></label>
+      <button className="button button-primary" disabled={starting || topicsQuery.isLoading || chosenTopics.length === 0} onClick={() => void startPractice()}>{starting ? <><span className="loading-spinner" /> Preparing practice…</> : <>Start timed practice <ArrowRight size={16} /></>}</button>
+      <span className="practice-timing-note"><Clock3 size={14} /> Timed and scored server-side</span>
     </div>
+    {topicsQuery.isLoading && <WorkspaceLoading message="Loading published practice topics…" />}
+    {topicsQuery.isError && <WorkspaceError message={candidateApiErrorMessage(topicsQuery.error)} onRetry={() => void topicsQuery.refetch()} />}
+    {error && <div className="assessment-inline-error" role="alert">{error}</div>}
     <div className="practice-layout">
       <section className="panel practice-question">
-        {question ? <>
-          <div className="practice-question-top">
-            <span className="badge badge-blue">{question.topic}</span>
-            <span className="badge badge-neutral">{question.difficulty}</span>
-            <span className="practice-count">Question {activeIndex + 1} of {questionSet.length}</span>
-            <span className={`practice-timer ${remainingSeconds !== null && remainingSeconds <= 60 ? "urgent" : ""}`} aria-label={`Time remaining ${formattedTime}`}><Clock3 size={15} /> {formattedTime}</span>
-            <button aria-label={bookmarked.includes(question.id) ? "Remove bookmark" : "Bookmark question"} className={`bookmark-button ${bookmarked.includes(question.id) ? "bookmarked" : ""}`} onClick={() => setBookmarked((items) => items.includes(question.id) ? items.filter((id) => id !== question.id) : [...items, question.id])}><Bookmark size={18} /></button>
-          </div>
-          <h2>{question.prompt}</h2>
-          <div className="answer-options practice-options">
-            {question.options.map((option, index) => <button key={option} className={`answer-option ${choice === index ? "selected" : ""} ${checked && index === question.answer ? "correct-option" : ""} ${checked && choice === index && index !== question.answer ? "incorrect-option" : ""}`} onClick={() => { if (!checked) setChoice(index); }}><span className="option-key">{String.fromCharCode(65 + index)}</span><span>{option}</span>{checked && index === question.answer && <Check size={17} className="option-check" />}</button>)}
-          </div>
-          {checked && <div className={`answer-feedback ${choice === question.answer ? "feedback-correct" : "feedback-incorrect"}`}><strong>{choice === question.answer ? "That’s right!" : "Not quite. Let’s learn from it."}</strong><p>{question.explanation}</p></div>}
-          <div className="practice-actions">{!checked ? <button className="button button-primary" disabled={choice === null} onClick={() => setChecked(true)}>Check answer <Check size={16} /></button> : <button className="button button-primary" onClick={next}>{activeIndex === questionSet.length - 1 ? "Finish practice set" : "Next question"} <ArrowRight size={16} /></button>}</div>
-        </> : finished ? <div className="empty-state"><Trophy size={22} /><strong>{timedOut ? "Time’s up" : "Practice set complete"}</strong><span>{timedOut ? `Your timed preview ended after ${Math.max(0, Math.min(activeIndex + (checked ? 1 : 0), questionSet.length))} of ${questionSet.length} questions.` : `You’ve finished all ${questionSet.length} questions in this preview set.`}</span><button className="button button-outline" onClick={startPractice}>Try a fresh set</button></div> : availableQuestions.length === 0 ? <div className="empty-state"><CircleHelp size={22} /><strong>No preview questions for this combination</strong><span>Try another topic or difficulty.</span></div> : <div className="empty-state"><BookOpenCheck size={22} /><strong>Ready for a fresh practice set?</strong><span>Choose your topic and difficulty, then start a new timed set of questions.</span></div>}
+        <div className="empty-state"><BookOpenCheck size={22} /><strong>{topics.length ? "Ready for a focused set?" : "No published practice topics yet"}</strong><span>{topics.length ? "The assessment engine prioritizes questions you have not answered correctly and generates fresh questions when needed." : "Open an assessment from the catalog to get started, or ask a mentor to publish practice questions."}</span>{topics.length === 0 && <Link className="button button-outline" to="/aptitude">Go to Aptitude assessment</Link>}</div>
       </section>
       <aside className="practice-side">
-        <div className="panel practice-progress-card"><span className="mini-kicker">TODAY’S PRACTICE</span><h3>You’re building a habit</h3><div className="practice-progress-stat"><strong>{questionsPractised}</strong><span>of {questionSet.length} questions practised</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${progressPercent}%` }} /></div><p>Each question is a step closer to your goal.</p></div>
-        <div className="panel practice-tip"><span className="tip-icon"><Lightbulb size={17} /></span><strong>Practice tip</strong><p>Focus on understanding why an answer is correct. Speed comes naturally as your concepts get stronger.</p></div>
-        <button className="retry-link" onClick={startPractice}><RotateCcw size={15} /> Start a fresh question set</button>
+        <div className="panel practice-progress-card"><span className="mini-kicker">PUBLISHED TOPICS</span><h3>Choose a focus area</h3><div className="practice-progress-stat"><strong>{topics.length}</strong><span>topics available</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${Math.min(topics.length * 12, 100)}%` }} /></div><p>Fresh questions are generated when a published pool needs more unseen questions.</p></div>
+        <div className="panel practice-tip"><span className="tip-icon"><Lightbulb size={17} /></span><strong>Practice tip</strong><p>Review explanations after each submitted attempt and revisit topics with lower accuracy or slower response times.</p></div>
       </aside>
     </div>
   </>;
 }
 
 function PerformancePage() {
+  const performanceQuery = useQuery({ queryKey: ["candidate-performance"], queryFn: getCandidatePerformance });
+  if (performanceQuery.isLoading) return <WorkspaceLoading message="Loading your performance…" />;
+  if (performanceQuery.isError) return <WorkspaceError message={candidateApiErrorMessage(performanceQuery.error)} onRetry={() => void performanceQuery.refetch()} />;
+  const performance = performanceQuery.data;
+  if (!performance) return <WorkspaceError message="The performance service returned no summary." />;
+  const trend = performance.trend.map((item) => ({
+    date: new Date(item.submitted_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    score: item.score_percent,
+    accuracy: item.accuracy_percent,
+  }));
+  const topics = [...performance.topics].sort((left, right) => left.accuracy_percent - right.accuracy_percent);
   return <>
-    <PageHeading eyebrow="YOUR PROGRESS, MADE CLEAR" title="My performance" description="See the patterns in your practice and celebrate the progress you’re making." action={<span className="plan-duration"><Clock3 size={15} /> Last 30 days</span>} />
-    <div className="metric-grid performance-metrics"><MetricCard icon={<Gauge size={18} />} label="Readiness score" value="68 / 100" note="+12 points overall" tone="blue" /><MetricCard icon={<Target size={18} />} label="Average accuracy" value="76%" note="+7% since last month" tone="green" /><MetricCard icon={<Clock3 size={18} />} label="Time per question" value="52 sec" note="8 sec faster" tone="purple" /><MetricCard icon={<Trophy size={18} />} label="Assessments" value="8" note="2 this month" tone="amber" /></div>
-    <section className="panel performance-trend-panel"><div className="panel-heading"><div><h2>Readiness and accuracy trend</h2><p>Progress across your last 5 assessments</p></div></div><div className="chart-legend"><span><i className="legend-dot blue-dot" /> Readiness</span><span><i className="legend-dot green-dot" /> Accuracy</span></div><div className="performance-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={performanceTrend} margin={{ top: 8, right: 12, bottom: 0, left: -18 }}><CartesianGrid stroke="#edf1f5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "#8792a0", fontSize: 12 }} dy={10} /><YAxis domain={[0, 100]} tickLine={false} axisLine={false} tick={{ fill: "#8792a0", fontSize: 12 }} /><Tooltip /><Area type="monotone" dataKey="score" name="Readiness" stroke="#1a8fc4" strokeWidth={2.5} fill="#e7f4fa" /><Area type="monotone" dataKey="accuracy" name="Accuracy" stroke="#52b788" strokeWidth={2} fill="transparent" /></AreaChart></ResponsiveContainer></div></section>
-    <div className="content-grid performance-bottom"><section className="panel"><div className="panel-heading"><div><h2>Topic strengths and focus areas</h2><p>Use your next practice session where it counts</p></div></div>{sectionScores.map((section) => <div className="performance-topic" key={section.name}><div><strong>{section.name}</strong><span>{section.score >= 75 ? "Strength" : section.score >= 65 ? "Building" : "Focus area"}</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${section.score}%`, background: section.color }} /></div><strong>{section.score}%</strong></div>)}</section><section className="panel readiness-method"><span className="metric-icon blue"><ShieldCheck size={18} /></span><h2>How readiness is measured</h2><p>Your readiness score reflects assessed performance across aptitude sections. It is a learning indicator—not a prediction of selection or placement.</p><div className="method-row"><span>Quantitative &amp; reasoning</span><strong>50%</strong></div><div className="method-row"><span>Verbal &amp; interpretation</span><strong>35%</strong></div><div className="method-row"><span>Problem solving</span><strong>15%</strong></div><small>Weights are preview values and are configurable by assessment policy.</small></section></div>
+    <PageHeading eyebrow="YOUR PROGRESS, MADE CLEAR" title="My performance" description="See the patterns from your completed assessments and practice sessions." />
+    <div className="metric-grid performance-metrics"><MetricCard icon={<Gauge size={18} />} label="Readiness score" value={`${performance.readiness_score} / 100`} note="Calculated from completed attempts" tone="blue" /><MetricCard icon={<Target size={18} />} label="Average accuracy" value={`${performance.average_accuracy_percent}%`} note="Across answered questions" tone="green" /><MetricCard icon={<Clock3 size={18} />} label="Time per question" value={`${Math.round(performance.average_time_seconds)} sec`} note="Average response time" tone="purple" /><MetricCard icon={<Trophy size={18} />} label="Assessments" value={`${performance.completed_attempts}`} note="Completed attempts" tone="amber" /></div>
+    <section className="panel performance-trend-panel"><div className="panel-heading"><div><h2>Score and accuracy trend</h2><p>Chronological results from your completed attempts</p></div></div><div className="chart-legend"><span><i className="legend-dot blue-dot" /> Score</span><span><i className="legend-dot green-dot" /> Accuracy</span></div>{trend.length ? <div className="performance-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={trend} margin={{ top: 8, right: 12, bottom: 0, left: -18 }}><CartesianGrid stroke="#edf1f5" vertical={false} /><XAxis dataKey="date" tickLine={false} axisLine={false} tick={{ fill: "#8792a0", fontSize: 12 }} dy={10} /><YAxis domain={[0, 100]} tickLine={false} axisLine={false} tick={{ fill: "#8792a0", fontSize: 12 }} /><Tooltip /><Area type="monotone" dataKey="score" name="Score" stroke="#1a8fc4" strokeWidth={2.5} fill="#e7f4fa" /><Area type="monotone" dataKey="accuracy" name="Accuracy" stroke="#52b788" strokeWidth={2} fill="transparent" /></AreaChart></ResponsiveContainer></div> : <div className="empty-state"><Target size={22} /><strong>Your trend starts with your first assessment</strong><span>Complete a timed session to see scores and accuracy over time.</span><Link className="button button-outline" to="/aptitude">Browse assessments</Link></div>}</section>
+    <div className="content-grid performance-bottom"><section className="panel"><div className="panel-heading"><div><h2>Topic strengths and focus areas</h2><p>Accuracy and speed aggregated across submitted attempts</p></div></div>{topics.length ? topics.map((topic) => <div className="performance-topic" key={topic.topic}><div><strong>{topic.topic}</strong><span>{topic.accuracy_percent >= 75 ? "Strength" : topic.accuracy_percent >= 60 ? "Building" : "Focus area"} · {Math.round(topic.avg_time_seconds)} sec/question</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${topic.accuracy_percent}%` }} /></div><strong>{topic.accuracy_percent}%</strong></div>) : <div className="empty-state"><BookOpenCheck size={22} /><strong>No topic diagnostics yet</strong><span>Complete an assessment to see per-topic accuracy and time.</span></div>}</section><section className="panel readiness-method"><span className="metric-icon blue"><ShieldCheck size={18} /></span><h2>Use your results as a learning guide</h2><p>Readiness reflects your completed assessment history. It is a progress indicator, not a prediction of selection or placement.</p><Link className="button button-outline" to="/recommendations">View recommendations <ArrowRight size={15} /></Link><small>Recommendations refresh after each completed attempt.</small></section></div>
   </>;
 }
 
 function CompaniesPage() {
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
-  const visibleCompanies = companies.filter((company) => company.name.toLowerCase().includes(query.toLowerCase()) || company.category.toLowerCase().includes(query.toLowerCase()));
+  const [startingSlug, setStartingSlug] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const assessmentsQuery = useQuery({
+    queryKey: ["assessments", "company_mock"],
+    queryFn: () => listAssessments({ category: "company_mock" }),
+  });
+  const visibleAssessments = (assessmentsQuery.data ?? []).filter((item) =>
+    `${item.title} ${item.target_role ?? ""} ${item.description}`.toLowerCase().includes(query.toLowerCase()),
+  );
+  const launch = async (assessment: AssessmentSummary) => {
+    setStartingSlug(assessment.slug);
+    setError(null);
+    try {
+      const attempt = await startAssessment(assessment.slug);
+      navigate(`/exam/${attempt.id}`);
+    } catch (startError) {
+      setError(candidateApiErrorMessage(startError));
+    } finally {
+      setStartingSlug(null);
+    }
+  };
   return <>
     <PageHeading eyebrow="PREPARE WITH CONTEXT" title="Company mock tests" description="Practise skills often used in hiring assessments. Every test here is a MentorMuni practice simulation—not an official company test." />
     <div className="callout callout-amber"><span className="callout-icon"><CircleHelp size={18} /></span><span><strong>Hiring processes can change.</strong><small>These practice simulations are informed by public sources. Always check the employer’s current recruitment information.</small></span></div>
-    <div className="company-toolbar"><div><h2>Explore company practice</h2><p>Choose an area to prepare for your next opportunity.</p></div><label className="search-field"><Search size={16} /><input aria-label="Search companies" placeholder="Search companies" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
-    <div className="company-grid">{visibleCompanies.map((company) => <article className="company-card" key={company.name}><div className="company-card-top"><span className={`company-logo ${company.color}`}>{company.name.slice(0, 1)}</span><span className="badge badge-neutral">Practice simulation</span></div><h3>{company.name}</h3><p>{company.category}</p><div className="company-detail"><span><FileQuestion size={15} /> {company.tests} practice tests</span><span><Clock3 size={15} /> 30–60 min</span></div><div className="company-card-footer"><span>Reviewed Nov 2026</span><button className="text-link" onClick={() => navigate("/exam/company")}>Try a mock <ArrowRight size={14} /></button></div></article>)}</div>
-    {visibleCompanies.length === 0 && <div className="empty-state"><Search size={22} /><strong>No matching companies</strong><span>Try another company or category.</span></div>}
+    <div className="company-toolbar"><div><h2>Published company simulations</h2><p>Select a blueprint designed for a target role or hiring style.</p></div><label className="search-field"><Search size={16} /><input aria-label="Search company assessments" placeholder="Search company assessments" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
+    {assessmentsQuery.isLoading && <WorkspaceLoading message="Loading published company assessments…" />}
+    {assessmentsQuery.isError && <WorkspaceError message={candidateApiErrorMessage(assessmentsQuery.error)} onRetry={() => void assessmentsQuery.refetch()} />}
+    {error && <div className="assessment-inline-error" role="alert">{error}</div>}
+    <div className="company-grid">{visibleAssessments.map((assessment) => <article className="company-card" key={assessment.slug}><div className="company-card-top"><span className="company-logo blue">{assessment.title.slice(0, 1)}</span><span className="badge badge-neutral">Practice simulation</span></div><h3>{assessment.title}</h3><p>{assessment.target_role ?? assessment.description}</p><div className="company-detail"><span><FileQuestion size={15} /> {assessment.question_count} questions</span><span><Clock3 size={15} /> {Math.ceil(assessment.duration_seconds / 60)} min</span></div><div className="company-card-footer"><span>{assessment.sections.length} sections</span><button className="text-link" disabled={startingSlug !== null} onClick={() => void launch(assessment)}>{startingSlug === assessment.slug ? "Preparing…" : "Start simulation"} <ArrowRight size={14} /></button></div></article>)}</div>
+    {!assessmentsQuery.isLoading && !assessmentsQuery.isError && visibleAssessments.length === 0 && <div className="empty-state"><Search size={22} /><strong>{query ? "No matching assessments" : "No company mock tests available yet"}</strong><span>{query ? "Try another search." : "Explore aptitude assessments or practise from the published topic bank."}</span>{!query && <><Link className="button button-outline" to="/aptitude">Browse assessments</Link><Link className="text-link" to="/practice">Go to Practice zone <ArrowRight size={14} /></Link></>}</div>}
     <section className="panel company-source-panel"><span className="source-icon"><ShieldCheck size={18} /></span><div><strong>Transparent preparation, always.</strong><p>Company details should include public source references and review dates before assessments are published. Simulations never imply affiliation or guarantee hiring outcomes.</p></div></section>
   </>;
 }
 
 function RecommendationsPage() {
+  const recommendationsQuery = useQuery({ queryKey: ["candidate-recommendations"], queryFn: getCandidateRecommendations });
+  if (recommendationsQuery.isLoading) return <WorkspaceLoading message="Building recommendations from your attempt history…" />;
+  if (recommendationsQuery.isError) return <WorkspaceError message={candidateApiErrorMessage(recommendationsQuery.error)} onRetry={() => void recommendationsQuery.refetch()} />;
+  const recommendations = recommendationsQuery.data?.items ?? [];
   return <>
-    <PageHeading eyebrow="YOUR PERSONALIZED PLAN" title="A clear next step" description="Small, focused practice sessions help turn insights into progress." action={<span className="plan-duration"><Clock3 size={15} /> 7-day plan</span>} />
-    <div className="recommendation-summary"><span className="summary-icon"><Sparkles size={19} /></span><div><strong>Built around your recent assessment</strong><p>Prioritized by topic accuracy, time spent, and the skills that can help you make progress next.</p></div><span className="summary-tag">PREVIEW</span></div>
-    <div className="plan-layout"><div className="plan-days">{["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((day, index) => <article className={`plan-day ${index === 3 ? "today" : ""}`} key={day}><div className="day-label"><span>DAY {index + 1}</span><strong>{day}</strong></div><div className="day-content"><span className={`day-icon day-${index % 3}`}>{index === 2 ? <Target size={17} /> : index === 5 ? <Trophy size={17} /> : <BookOpenCheck size={17} />}</span><div><strong>{recommendations[index % recommendations.length].title}</strong><p>{recommendations[index % recommendations.length].detail}</p><small><Clock3 size={13} /> {recommendations[index % recommendations.length].meta.split("·")[1]?.trim() || "15 min"}</small></div></div><Link to="/practice" className="day-action">{index < 3 ? "Start session" : "View session"} <ArrowRight size={14} /></Link></article>)}</div><aside className="plan-sidebar"><div className="panel plan-progress"><span className="mini-kicker">THIS WEEK</span><div className="weekly-score"><strong>2</strong><span>of 7 sessions</span></div><div className="week-dots">{["M", "T", "W", "T", "F", "S", "S"].map((day, index) => <span className={index < 2 ? "done" : ""} key={`${day}-${index}`}>{index < 2 ? <Check size={13} /> : day}</span>)}</div><p>A short practice session keeps your momentum going.</p><Link to="/practice" className="button button-primary full-button">Practise now <ArrowRight size={15} /></Link></div><div className="panel plan-principle"><Lightbulb size={18} /><strong>Measure. Improve. Prove.</strong><p>Revisit your assessment after a week to see the progress your practice is making.</p></div></aside></div>
+    <PageHeading eyebrow="YOUR PERSONALIZED PLAN" title="Your next steps" description="Recommendations are generated from your completed attempt history." action={<span className="plan-duration"><Sparkles size={15} /> {recommendations.length} recommendations</span>} />
+    <div className="recommendation-summary"><span className="summary-icon"><Sparkles size={19} /></span><div><strong>Focused on your recent results</strong><p>Weak topics, time-management opportunities, and next-step assessment progression appear here when supported by your results.</p></div><span className="summary-tag">LIVE</span></div>
+    <div className="plan-layout"><div className="plan-days">{recommendations.map((item, index) => <article className="plan-day" key={item.id}><div className="day-label"><span>STEP {index + 1}</span><strong>{item.kind === "weak_topic" ? "FOCUS" : item.kind === "time_management" ? "PACE" : "NEXT"}</strong></div><div className="day-content"><span className={`day-icon day-${index % 3}`}>{item.kind === "time_management" ? <Timer size={17} /> : item.kind === "progression" ? <Trophy size={17} /> : <Target size={17} />}</span><div><strong>{item.title}</strong><p>{item.description}</p><small><Clock3 size={13} /> {item.estimated_minutes ? `${item.estimated_minutes} min` : item.action_label}</small></div></div><RecommendationRow item={item} /></article>)}
+      {!recommendations.length && <div className="panel empty-state"><BookOpenCheck size={22} /><strong>No recommendations yet</strong><span>Complete an assessment to get topic-level practice and progression suggestions.</span><Link className="button button-primary" to="/aptitude">Browse assessments <ArrowRight size={15} /></Link><Link className="text-link" to="/practice">Go to Practice zone <ArrowRight size={14} /></Link></div>}
+    </div><aside className="plan-sidebar"><div className="panel plan-progress"><span className="mini-kicker">YOUR PLAN</span><div className="weekly-score"><strong>{recommendations.length}</strong><span>active next steps</span></div><p>Suggestions refresh after each completed assessment.</p><Link to="/practice" className="button button-primary full-button">Practise now <ArrowRight size={15} /></Link></div><div className="panel plan-principle"><Lightbulb size={18} /><strong>Measure. Improve. Prove.</strong><p>Use your results as an indicator of learning progress, not a prediction of placement.</p></div></aside></div>
   </>;
 }
 

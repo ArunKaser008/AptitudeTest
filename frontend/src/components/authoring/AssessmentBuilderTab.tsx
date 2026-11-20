@@ -104,6 +104,10 @@ function AssessmentConfigEditor({ assessment, onClose }: {
   const [slug, setSlug] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [category, setCategory] = useState<"aptitude" | "company_mock" | "practice">(assessment?.category ?? "aptitude");
+  const [targetRole, setTargetRole] = useState(assessment?.target_role ?? "");
+  const [aiGenerationEnabled, setAiGenerationEnabled] = useState(assessment ? true : true);
+  const [blueprintTopics, setBlueprintTopics] = useState("");
   const [config, setConfig] = useState(() => configFor(assessment));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,6 +135,10 @@ function AssessmentConfigEditor({ assessment, onClose }: {
           slug: slug.trim(),
           title: title.trim(),
           description: description.trim(),
+          category,
+          target_role: targetRole.trim() || null,
+          ai_generation_enabled: aiGenerationEnabled,
+          blueprint_topics: blueprintTopics.split(",").map((topic) => topic.trim()).filter(Boolean),
           ...config,
         });
       }
@@ -150,7 +158,15 @@ function AssessmentConfigEditor({ assessment, onClose }: {
       <section className="authoring-dialog assessment-config-editor" role="dialog" aria-modal="true" aria-labelledby="assessment-editor-title">
         <div className="authoring-editor-header"><div><span className="section-kicker">ASSESSMENT BUILDER</span><h2 id="assessment-editor-title">{assessment ? `Configure ${assessment.title}` : "Create assessment"}</h2></div><button className="icon-button" aria-label="Close assessment editor" onClick={close}><X size={18} /></button></div>
         <form className="authoring-form" onSubmit={(event) => void save(event)}>
-          {!assessment && <div className="authoring-two-fields"><label>Slug<input required minLength={1} maxLength={100} value={slug} onChange={(event) => setSlug(event.target.value)} /></label><label>Title<input required minLength={1} maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="authoring-full-field">Description<input value={description} onChange={(event) => setDescription(event.target.value)} /></label></div>}
+          {!assessment && <div className="authoring-two-fields">
+            <label>Slug<input required minLength={1} maxLength={100} value={slug} onChange={(event) => setSlug(event.target.value)} /></label>
+            <label>Title<input required minLength={1} maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+            <label>Category<select value={category} onChange={(event) => setCategory(event.target.value as typeof category)}><option value="aptitude">Aptitude</option><option value="company_mock">Company mock</option><option value="practice">Practice</option></select></label>
+            <label>Target role<input maxLength={150} value={targetRole} onChange={(event) => setTargetRole(event.target.value)} placeholder="IT Services, SDE / Product, Analytics…" /></label>
+            <label className="authoring-full-field">Description<input value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+            <label className="authoring-full-field">Blueprint topics (comma-separated)<input value={blueprintTopics} onChange={(event) => setBlueprintTopics(event.target.value)} placeholder="Applied Quantitative, Data Interpretation" /></label>
+            <label className="authoring-full-field"><input type="checkbox" checked={aiGenerationEnabled} onChange={(event) => setAiGenerationEnabled(event.target.checked)} /> Generate fresh AI questions when the pool needs more unique items</label>
+          </div>}
           <label>Duration (seconds)<input type="number" min="1" max="86400" required value={config.duration_seconds} onChange={(event) => updateConfig("duration_seconds", Number(event.target.value))} /></label>
           <div className="authoring-toggle-row">
             <label><input type="checkbox" checked={config.randomize_questions} onChange={(event) => updateConfig("randomize_questions", event.target.checked)} /> Randomize question order</label>

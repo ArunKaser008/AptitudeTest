@@ -5,6 +5,9 @@ export type AssessmentSummary = {
   slug: string;
   title: string;
   description: string;
+  category: "aptitude" | "company_mock" | "practice";
+  target_role: string | null;
+  ai_generation_enabled: boolean;
   duration_seconds: number;
   question_count: number;
   sections: Array<{ title: string; question_count: number }>;
@@ -198,8 +201,15 @@ async function getCandidateToken(): Promise<string> {
   return candidateTokenRequest;
 }
 
-export async function listAssessments(): Promise<AssessmentSummary[]> {
-  return request<AssessmentSummary[]>("/assessments");
+export async function listAssessments(filters: {
+  category?: AssessmentSummary["category"];
+  targetRole?: string;
+} = {}): Promise<AssessmentSummary[]> {
+  const search = new URLSearchParams();
+  if (filters.category) search.set("category", filters.category);
+  if (filters.targetRole) search.set("target_role", filters.targetRole);
+  const query = search.size ? `?${search.toString()}` : "";
+  return request<AssessmentSummary[]>(`/assessments${query}`);
 }
 
 export async function startAssessment(assessmentSlug: string): Promise<{ id: string }> {
@@ -294,6 +304,14 @@ export async function submitAssessment(
 export async function getAssessmentResult(attemptId: string): Promise<AssessmentResult> {
   const candidateToken = await getCandidateToken();
   return request<AssessmentResult>(`/attempts/${encodeURIComponent(attemptId)}/results`, {}, candidateToken);
+}
+
+export async function requestCandidateApi<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const candidateToken = await getCandidateToken();
+  return request<T>(path, init, candidateToken);
 }
 
 export { request as requestAssessmentApi };

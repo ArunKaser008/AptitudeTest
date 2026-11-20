@@ -58,6 +58,9 @@ class AssessmentOut(StrictSchema):
     slug: str
     title: str
     description: str
+    category: Literal["aptitude", "company_mock", "practice"] = "aptitude"
+    target_role: str | None = None
+    ai_generation_enabled: bool = True
     duration_seconds: int
     question_count: int
     sections: list[AssessmentSectionOut]
@@ -70,6 +73,30 @@ class AttemptCreateIn(StrictSchema):
 
 class WeakTopicPracticeIn(StrictSchema):
     source_attempt_id: UUID
+
+
+class PracticeSimilarIn(StrictSchema):
+    source_attempt_id: UUID | None = None
+    question_id: UUID | None = None
+    topics: list[str] = Field(default_factory=list, max_length=20)
+    question_count: int = Field(default=5, ge=1, le=20)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "PracticeSimilarIn":
+        if self.question_id is not None and self.source_attempt_id is None:
+            raise ValueError("A source_attempt_id is required when question_id is provided.")
+        self.topics = [topic.strip() for topic in self.topics]
+        if any(not topic for topic in self.topics) or len(set(self.topics)) != len(self.topics):
+            raise ValueError("Topics must be non-blank and unique.")
+        return self
+
+
+class PracticeTopicOut(StrictSchema):
+    topic: str
+    easy_count: int = Field(ge=0)
+    medium_count: int = Field(ge=0)
+    hard_count: int = Field(ge=0)
+    total_count: int = Field(ge=0)
 
 
 class AttemptOut(StrictSchema):
@@ -191,6 +218,52 @@ class AttemptResultOut(StrictSchema):
     topics: list[TopicResultOut] = Field(default_factory=list)
 
 
+class PerformanceTopicOut(StrictSchema):
+    topic: str
+    total_questions: int = Field(ge=0)
+    correct: int = Field(ge=0)
+    incorrect: int = Field(ge=0)
+    unanswered: int = Field(ge=0)
+    accuracy_percent: float = Field(ge=0, le=100)
+    avg_time_seconds: float = Field(ge=0)
+
+
+class PerformanceTrendOut(StrictSchema):
+    attempt_id: UUID
+    assessment_slug: str
+    assessment_title: str
+    category: Literal["aptitude", "company_mock", "practice"]
+    submitted_at: datetime
+    score_percent: float = Field(ge=0, le=100)
+    accuracy_percent: float = Field(ge=0, le=100)
+
+
+class CandidatePerformanceOut(StrictSchema):
+    completed_attempts: int = Field(ge=0)
+    readiness_score: float = Field(ge=0, le=100)
+    average_accuracy_percent: float = Field(ge=0, le=100)
+    average_time_seconds: float = Field(ge=0)
+    practice_time_seconds: int = Field(ge=0)
+    trend: list[PerformanceTrendOut] = Field(default_factory=list)
+    topics: list[PerformanceTopicOut] = Field(default_factory=list)
+
+
+class RecommendationOut(StrictSchema):
+    id: str
+    kind: Literal["weak_topic", "time_management", "progression", "baseline"]
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=1_000)
+    topic: str | None = None
+    assessment_slug: str | None = None
+    action_label: str = Field(min_length=1, max_length=80)
+    estimated_minutes: int | None = Field(default=None, ge=1, le=1_440)
+
+
+class RecommendationListOut(StrictSchema):
+    count: int = Field(ge=0)
+    items: list[RecommendationOut] = Field(default_factory=list)
+
+
 class QuestionOptionIn(StrictSchema):
     id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=2_000)
@@ -292,6 +365,10 @@ class AssessmentCreateIn(StrictSchema):
     slug: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=10_000)
+    category: Literal["aptitude", "company_mock", "practice"] = "aptitude"
+    target_role: str | None = Field(default=None, max_length=150)
+    ai_generation_enabled: bool = True
+    blueprint_topics: list[str] = Field(default_factory=list, max_length=100)
     duration_seconds: int = Field(gt=0, le=86_400)
     show_explanations_after_submission: bool = True
     randomize_questions: bool = True
@@ -337,6 +414,8 @@ class AuthoringAssessmentOut(StrictSchema):
     title: str
     description: str
     status: Literal["draft", "published", "archived"]
+    category: Literal["aptitude", "company_mock", "practice"] = "aptitude"
+    target_role: str | None = None
     config_version_id: UUID | None
     config_version_number: int | None
     config_status: Literal["draft", "published", "archived"] | None

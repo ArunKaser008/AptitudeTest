@@ -32,6 +32,12 @@ services:
       DATABASE_URL: postgresql+psycopg://aptitude:aptitude@db:5432/aptitude
       CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
       ENVIRONMENT: development
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1/chat/completions}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      AI_GENERATION_MAX_RETRIES: ${AI_GENERATION_MAX_RETRIES:-3}
+      SEED_DEFAULT_ASSESSMENTS: ${SEED_DEFAULT_ASSESSMENTS:-false}
     ports:
       - "8000:8000"
     depends_on:

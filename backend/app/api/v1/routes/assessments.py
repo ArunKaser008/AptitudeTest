@@ -1,7 +1,7 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Response, status
+from fastapi import APIRouter, Header, Query, Response, status
 
 from app.api.dependencies import Candidate, DatabaseSession
 from app.schemas import (
@@ -13,12 +13,15 @@ from app.schemas import (
     AttemptResultOut,
     CandidateSessionOut,
     PositionUpdateIn,
+    PracticeSimilarIn,
+    PracticeTopicOut,
     ResponseIn,
     ResponseOut,
     ReviewFlagIn,
     WeakTopicPracticeIn,
 )
 from app.services import assessment_service
+from app.services import practice_service
 
 router = APIRouter()
 
@@ -33,8 +36,60 @@ def create_candidate_session(db: DatabaseSession) -> CandidateSessionOut:
 
 
 @router.get("/assessments", response_model=list[AssessmentOut])
-def list_assessments(db: DatabaseSession) -> list[AssessmentOut]:
-    return assessment_service.list_available_assessments(db)
+def list_assessments(
+    db: DatabaseSession,
+    category: Literal["aptitude", "company_mock", "practice"] | None = None,
+    target_role: str | None = Query(default=None, alias="target_role", max_length=150),
+) -> list[AssessmentOut]:
+    assessments = assessment_service.list_available_assessments(db)
+    if category is not None:
+        assessments = [item for item in assessments if item.category == category]
+    if target_role is not None:
+        assessments = [item for item in assessments if item.target_role == target_role]
+    return assessments
+
+
+@router.get("/practice/topics", response_model=list[PracticeTopicOut])
+def list_practice_topics(db: DatabaseSession) -> list[PracticeTopicOut]:
+    return practice_service.list_topics(db)
+
+
+@router.post(
+    "/practice/session",
+    response_model=AttemptOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_practice_session(
+    payload: PracticeSimilarIn,
+    db: DatabaseSession,
+    candidate: Candidate,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=100)],
+) -> AttemptOut:
+    return await assessment_service.create_similar_practice(
+        db,
+        candidate,
+        payload,
+        idempotency_key,
+    )
+
+
+@router.post(
+    "/practice/similar",
+    response_model=AttemptOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_similar_practice(
+    payload: PracticeSimilarIn,
+    db: DatabaseSession,
+    candidate: Candidate,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=100)],
+) -> AttemptOut:
+    return await assessment_service.create_similar_practice(
+        db,
+        candidate,
+        payload,
+        idempotency_key,
+    )
 
 
 @router.post(
@@ -61,13 +116,13 @@ def create_weak_topic_practice(
     response_model=AttemptOut,
     status_code=status.HTTP_201_CREATED,
 )
-def create_attempt(
+async def create_attempt(
     payload: AttemptCreateIn,
     db: DatabaseSession,
     candidate: Candidate,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=100)],
 ) -> AttemptOut:
-    return assessment_service.create_attempt(
+    return await assessment_service.create_attempt(
         db,
         candidate,
         payload.assessment_slug,

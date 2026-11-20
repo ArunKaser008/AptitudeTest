@@ -308,6 +308,8 @@ def _authoring_assessment_out(
             title=assessment.title,
             description=assessment.description,
             status=assessment.status,
+            category=assessment.category,
+            target_role=assessment.target_role,
             config_version_id=None,
             config_version_number=None,
             config_status=None,
@@ -332,6 +334,8 @@ def _authoring_assessment_out(
         title=assessment.title,
         description=assessment.description,
         status=assessment.status,
+        category=assessment.category,
+        target_role=assessment.target_role,
         config_version_id=config.id,
         config_version_number=config.version_number,
         config_status=config.status,
@@ -429,6 +433,10 @@ def create_assessment(db: Session, payload: AssessmentCreateIn) -> AuthoringAsse
         title=payload.title,
         description=payload.description,
         status="draft",
+        category=payload.category,
+        target_role=payload.target_role,
+        ai_generation_enabled=payload.ai_generation_enabled,
+        blueprint_topics=payload.blueprint_topics,
     )
     db.add(assessment)
     db.flush()
@@ -484,7 +492,16 @@ def clone_assessment(
             negative_marks=section.negative_marks,
             question_version_ids=question_ids,
         ))
-    clone = Assessment(slug=payload.slug, title=payload.title, description=source.description, status="draft")
+    clone = Assessment(
+        slug=payload.slug,
+        title=payload.title,
+        description=source.description,
+        status="draft",
+        category=source.category,
+        target_role=source.target_role,
+        ai_generation_enabled=source.ai_generation_enabled,
+        blueprint_topics=source.blueprint_topics,
+    )
     db.add(clone)
     db.flush()
     config = _create_config(

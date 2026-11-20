@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -42,9 +42,13 @@ function createAssessmentApiMock({
     slug: "foundation",
     title: "Foundation Aptitude Test",
     description: "Published core aptitude assessment.",
+    category: "aptitude",
+    target_role: null,
+    ai_generation_enabled: true,
     duration_seconds: 600,
     question_count: 10,
     sections: [{ title: "Quantitative", question_count: 10 }],
+    difficulties: ["medium"],
   }],
   durationSeconds = 600,
   initialIncorrectTimeSink = false,
@@ -137,6 +141,57 @@ function createAssessmentApiMock({
 
     if (path === "/candidate-sessions" && method === "POST") {
       return respond({ session_token: "candidate-test-token", expires_at: new Date(Date.now() + 86_400_000).toISOString() }, 201);
+    }
+    if (path === "/candidate/performance" && method === "GET") {
+      return respond({
+        completed_attempts: 1,
+        readiness_score: 68,
+        average_accuracy_percent: 76,
+        average_time_seconds: 52,
+        practice_time_seconds: 3600,
+        trend: [{
+          attempt_id: attemptId,
+          assessment_slug: "foundation",
+          assessment_title: "Foundation Aptitude Test",
+          category: "aptitude",
+          submitted_at: new Date().toISOString(),
+          score_percent: 68,
+          accuracy_percent: 76,
+        }],
+        topics: [{
+          topic: "Quantitative",
+          total_questions: 10,
+          correct: 7,
+          incorrect: 2,
+          unanswered: 1,
+          accuracy_percent: 78,
+          avg_time_seconds: 52,
+        }],
+      });
+    }
+    if (path === "/candidate/recommendations" && method === "GET") {
+      return respond({
+        count: 1,
+        items: [{
+          id: "practice-weak-topic",
+          kind: "weak_topic",
+          title: "Strengthen quantitative reasoning",
+          description: "Practise your lowest-accuracy topic.",
+          topic: "Quantitative",
+          assessment_slug: null,
+          action_label: "Practice topic",
+          estimated_minutes: 10,
+        }],
+      });
+    }
+    if (path === "/practice/topics" && method === "GET") {
+      return respond([{ topic: "Quantitative", easy_count: 5, medium_count: 5, hard_count: 5, total_count: 15 }]);
+    }
+    if (path === "/practice/session" && method === "POST") {
+      return respond({ id: attemptId, title: "Focused practice", question_count: 5 }, 201);
+    }
+    if (path === "/practice/similar" && method === "POST") {
+      return respond({ id: attemptId, title: "Similar practice", question_count: 5 }, 201);
     }
     if (path === "/assessments" && method === "GET") return respond(assessments);
     if (path === "/practice-weak-topics" && method === "POST") {
@@ -321,30 +376,29 @@ describe("student workspace preview", () => {
     expect(restored).not.toHaveProperty("remainingSeconds");
   });
 
-  it("shows readiness and provides a route to assessment discovery", () => {
+  it("shows live readiness data and provides a route to assessment discovery", async () => {
+    createAssessmentApiMock();
     renderApp();
 
-    expect(screen.getByRole("heading", { name: /good afternoon, arun/i })).toBeInTheDocument();
-    expect(screen.getAllByText("68")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "Measure your readiness" })).toBeInTheDocument();
+    expect(screen.getByText("68", { selector: ".readiness-number" })).toBeInTheDocument();
+    expect(screen.getByText("1", { selector: ".metric-value" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /take an assessment/i })).toHaveAttribute("href", "/aptitude");
   });
 
-  it("checks practice answers and reveals an explanation", async () => {
+  it("starts a server-generated practice session from a published topic", async () => {
     const user = userEvent.setup();
+    const { fetcher } = createAssessmentApiMock();
     renderApp("/practice");
 
-    await user.click(screen.getByRole("button", { name: /start timed practice/i }));
-    const prompt = screen.getByRole("heading", { level: 2 }).textContent;
-    const question = questions.find((item) => item.prompt === prompt);
-    expect(question).toBeDefined();
-    if (!question) throw new Error("The practice question was not found in the question bank.");
-    await user.click(screen.getByRole("button", {
-      name: `${String.fromCharCode(65 + question.answer)} ${question.options[question.answer]}`,
-    }));
-    await user.click(screen.getByRole("button", { name: /check answer/i }));
-
-    expect(screen.getByText("That’s right!")).toBeInTheDocument();
-    expect(screen.getByText(question.explanation)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: /start timed practice/i }));
+    expect(await screen.findByRole("heading", { name: "Production assessment question 1" })).toBeInTheDocument();
+    const practiceCall = fetcher.mock.calls.find(([input]) => new URL(String(input)).pathname.endsWith("/practice/session"));
+    expect(practiceCall).toBeDefined();
+    expect(JSON.parse(String(practiceCall?.[1]?.body))).toMatchObject({
+      topics: ["Quantitative"],
+      question_count: 10,
+    });
   });
 
   it("submits a server-backed assessment when its server deadline expires", async () => {
@@ -363,40 +417,20 @@ describe("student workspace preview", () => {
     expect(await screen.findByRole("heading", { name: "Your results" }, { timeout: 5000 })).toBeInTheDocument();
   });
 
-  it("ends timed practice when its one-minute-per-question deadline passes", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(4_000_000);
+  it("loads practice topic availability from the backend", async () => {
+    createAssessmentApiMock();
     renderApp("/practice");
-    fireEvent.click(screen.getByRole("button", { name: /start timed practice/i }));
 
-    expect(screen.getByLabelText("Time remaining 10:00")).toBeInTheDocument();
-    act(() => {
-      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
-      window.dispatchEvent(new Event("focus"));
-    });
-
-    expect(screen.getByText("Time’s up")).toBeInTheDocument();
-    expect(screen.getByText(/timed preview ended after 0 of 10 questions/i)).toBeInTheDocument();
-    expect(screen.getByText("0", { selector: ".practice-progress-stat strong" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "Quantitative (15 banked)" })).toBeInTheDocument();
+    expect(screen.getByText("1", { selector: ".practice-progress-stat strong" })).toBeInTheDocument();
   });
 
-  it("restores timed practice without resetting its deadline after refresh", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(5_000_000);
-    renderApp("/practice");
-    fireEvent.click(screen.getByRole("button", { name: /start timed practice/i }));
-    expect(screen.getByLabelText("Time remaining 10:00")).toBeInTheDocument();
+  it("shows recommendation count from the candidate API", async () => {
+    createAssessmentApiMock();
+    renderApp("/");
 
-    act(() => {
-      vi.setSystemTime(Date.now() + 20_000);
-      window.dispatchEvent(new Event("focus"));
-    });
-    expect(screen.getByLabelText("Time remaining 09:40")).toBeInTheDocument();
-
-    cleanup();
-    renderApp("/practice");
-    expect(screen.getByLabelText("Time remaining 09:40")).toBeInTheDocument();
-    expect(screen.getByText("Question 1 of 10")).toBeInTheDocument();
+    expect(await screen.findByText("1", { selector: ".nav-count" })).toBeInTheDocument();
+    expect(await screen.findByText("Strengthen quantitative reasoning")).toBeInTheDocument();
   });
 
   it("persists responses and question navigation through the assessment API", async () => {

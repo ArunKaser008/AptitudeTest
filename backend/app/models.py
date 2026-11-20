@@ -65,6 +65,10 @@ class Assessment(TimestampMixin, Base):
             "status IN ('draft', 'published', 'archived')",
             name="ck_assessment_status",
         ),
+        CheckConstraint(
+            "category IN ('aptitude', 'company_mock', 'practice')",
+            name="ck_assessment_category",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -72,6 +76,10 @@ class Assessment(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="aptitude", index=True)
+    target_role: Mapped[str | None] = mapped_column(String(150))
+    ai_generation_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    blueprint_topics: Mapped[list[str]] = mapped_column(json_document, nullable=False, default=list)
 
 
 class AssessmentConfigVersion(TimestampMixin, Base):

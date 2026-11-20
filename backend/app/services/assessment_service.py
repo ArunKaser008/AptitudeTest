@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import secrets
@@ -31,12 +32,14 @@ from app.schemas import (
     AttemptQuestionOut,
     AttemptResultOut,
     CandidateSessionOut,
+    PracticeSimilarIn,
     QuestionOptionOut,
     QuestionReviewOut,
     ResponseOut,
     SectionResultOut,
     TopicResultOut,
 )
+from app.services import ai_question_generator
 
 
 class DomainError(Exception):
@@ -60,6 +63,24 @@ def _attempt_duration(
     config: AssessmentConfigVersion,
 ) -> int:
     return attempt.duration_seconds or config.duration_seconds
+
+
+def _topics_for_section(section: AssessmentSection, topics: list[str]) -> tuple[str, ...]:
+    title = section.title.casefold()
+    if "quant" in title or "numer" in title or "business" in title:
+        terms = ("quant", "numer", "arithmetic", "percent", "probability", "estimation")
+    elif "data" in title or "caselet" in title or "metric" in title:
+        terms = ("data interpretation", "caselet", "metric", "consult")
+    elif "logical" in title or "abstract" in title or "inference" in title:
+        terms = ("logical", "abstract", "inference", "pattern")
+    elif "verbal" in title or "workplace" in title or "comprehension" in title:
+        terms = ("verbal", "workplace", "comprehension", "communication")
+    elif " cs " in f" {title} " or "technical" in title or "pseudocode" in title:
+        terms = ("cs fundamentals", "pseudocode", "data structure", "complexity")
+    else:
+        terms = tuple(title.split())
+    matched = tuple(topic for topic in topics if any(term in topic.casefold() for term in terms))
+    return matched or (section.title,)
 
 
 def hash_candidate_token(token: str) -> str:
@@ -162,7 +183,7 @@ def list_available_assessments(db: Session) -> list[AssessmentOut]:
         if config is None:
             continue
         sections = _sections(db, config.id)
-        if not _is_ready(db, sections):
+        if not assessment.ai_generation_enabled and not _is_ready(db, sections):
             continue
         eligible = _eligible_pools(db, [section.id for section in sections])
         available.append(
@@ -170,6 +191,9 @@ def list_available_assessments(db: Session) -> list[AssessmentOut]:
                 slug=assessment.slug,
                 title=assessment.title,
                 description=assessment.description,
+                category=assessment.category,
+                target_role=assessment.target_role,
+                ai_generation_enabled=assessment.ai_generation_enabled,
                 duration_seconds=config.duration_seconds,
                 question_count=sum(section.question_count for section in sections),
                 sections=[
@@ -202,7 +226,7 @@ def _assessment_by_slug(
     if config is None:
         raise DomainError(404, "assessment_not_found", "The requested assessment is not available.")
     sections = _sections(db, config.id)
-    if not _is_ready(db, sections):
+    if not sections or (not assessment.ai_generation_enabled and not _is_ready(db, sections)):
         raise DomainError(409, "assessment_content_unavailable", "This assessment is not ready for candidates.")
     return assessment, config, sections
 
@@ -552,7 +576,7 @@ def _finalize_attempt(
     return result
 
 
-def create_attempt(
+async def create_attempt(
     db: Session,
     candidate_session: CandidateSession,
     assessment_slug: str,
@@ -583,6 +607,132 @@ def create_attempt(
         return _attempt_out(db, existing, assessment)
 
     assessment, config, sections = _assessment_by_slug(db, assessment_slug)
+    previously_used_ids: set[uuid.UUID] = set()
+    used_in_current_attempt: set[uuid.UUID] = set()
+    prior_question_ids = db.execute(
+        select(AttemptQuestion.question_version_id)
+        .join(AssessmentAttempt, AssessmentAttempt.id == AttemptQuestion.attempt_id)
+        .where(
+            AssessmentAttempt.candidate_session_id == candidate_session.id,
+        )
+    )
+    previously_used_ids.update(question_id for (question_id,) in prior_question_ids)
+
+    eligible_pools = _eligible_pools(db, [section.id for section in sections])
+    prepared_questions: list[tuple[AssessmentSection, QuestionVersion]] = []
+    generation_requests: list[tuple[AssessmentSection, int, ai_question_generator.GenerationRequest]] = []
+    for section in sections:
+        pool = eligible_pools.get(section.id, [])
+        unseen = [
+            question
+            for question in pool
+            if question.id not in previously_used_ids
+            and question.id not in used_in_current_attempt
+        ]
+        prepared_questions.extend((section, question) for question in unseen)
+        if assessment.ai_generation_enabled and len(unseen) < section.question_count:
+            recent_questions = list(db.execute(
+                select(QuestionVersion.id, QuestionVersion.prompt, QuestionVersion.stimulus)
+                .join(AttemptQuestion, AttemptQuestion.question_version_id == QuestionVersion.id)
+                .join(AssessmentAttempt, AssessmentAttempt.id == AttemptQuestion.attempt_id)
+                .where(
+                    AssessmentAttempt.candidate_session_id == candidate_session.id,
+                    AssessmentAttempt.assessment_id == assessment.id,
+                    AttemptQuestion.section_id == section.id,
+                )
+                .order_by(AssessmentAttempt.started_at.desc())
+                .limit(50)
+            ))
+            recent_fingerprints = tuple(
+                ai_question_generator.scenario_fingerprint(prompt, stimulus)
+                for _, prompt, stimulus in recent_questions
+            )
+            generation_requests.append((
+                section,
+                section.question_count - len(unseen),
+                ai_question_generator.GenerationRequest(
+                    section_title=section.title,
+                    topics=_topics_for_section(section, assessment.blueprint_topics),
+                    count=section.question_count - len(unseen),
+                    difficulty="medium",
+                    scenario_seed=secrets.token_urlsafe(24),
+                    previously_used_ids=tuple(str(item) for item in previously_used_ids),
+                    recent_scenarios=recent_fingerprints,
+                ),
+            ))
+
+    if generation_requests:
+        try:
+            generated_batches = await asyncio.gather(*(
+                ai_question_generator.generate_questions(request)
+                for _, _, request in generation_requests
+            ))
+        except RuntimeError as error:
+            db.rollback()
+            raise DomainError(
+                503,
+                "question_generation_failed",
+                "Fresh questions could not be generated and validated. Please try starting again.",
+            ) from error
+        generation_time = utc_now()
+        for (section, _, _), generated_batch in zip(generation_requests, generated_batches):
+            for generated in generated_batch:
+                question = QuestionVersion(
+                    logical_id=uuid.uuid4(),
+                    version_number=1,
+                    status="published",
+                    question_type="single_choice",
+                    prompt=generated.prompt,
+                    stimulus=generated.stimulus.model_dump(mode="json") if generated.stimulus else None,
+                    topic=generated.topic,
+                    difficulty=generated.difficulty,
+                    options=[item.model_dump(mode="json") for item in generated.options],
+                    correct_answer=generated.correct_answer,
+                    explanation=generated.explanation,
+                    marks=section.marks_per_question,
+                    negative_marks=section.negative_marks,
+                    verified_at=generation_time,
+                    source_reference="ai_generated",
+                )
+                db.add(question)
+                db.flush()
+                db.add(AssessmentQuestionPool(
+                    section_id=section.id,
+                    question_version_id=question.id,
+                ))
+                eligible_pools[section.id].append(question)
+                prepared_questions.append((section, question))
+
+    selected_by_section: dict[uuid.UUID, list[QuestionVersion]] = defaultdict(list)
+    for section, question in prepared_questions:
+        selected_by_section[section.id].append(question)
+
+    for section in sections:
+        chosen = [
+            question
+            for question in selected_by_section.get(section.id, [])
+            if question.id not in used_in_current_attempt
+        ]
+        if len(chosen) > section.question_count:
+            chosen = secrets.SystemRandom().sample(chosen, section.question_count)
+        if len(chosen) < section.question_count:
+            pool = eligible_pools.get(section.id, [])
+            remaining = [
+                question for question in pool
+                if question.id not in {item.id for item in chosen}
+                and question.id not in used_in_current_attempt
+            ]
+            needed = section.question_count - len(chosen)
+            if len(remaining) < needed:
+                if assessment.ai_generation_enabled:
+                    db.rollback()
+                    raise DomainError(503, "question_generation_incomplete", "The assessment could not be filled with unique questions.")
+                remaining = [question for question in pool if question.id not in {item.id for item in chosen}]
+            chosen.extend(secrets.SystemRandom().sample(remaining, needed))
+        if config.randomize_questions:
+            secrets.SystemRandom().shuffle(chosen)
+        selected_by_section[section.id] = chosen
+        used_in_current_attempt.update(question.id for question in chosen)
     now = utc_now()
     attempt = AssessmentAttempt(
         candidate_session_id=candidate_session.id,
@@ -597,41 +747,11 @@ def create_attempt(
     db.add(attempt)
     db.flush()
 
-    previously_used: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
-    used_in_current_attempt: set[uuid.UUID] = set()
-    prior_question_ids = db.execute(
-        select(AttemptQuestion.section_id, AttemptQuestion.question_version_id)
-        .join(AssessmentAttempt, AssessmentAttempt.id == AttemptQuestion.attempt_id)
-        .where(
-            AssessmentAttempt.candidate_session_id == candidate_session.id,
-            AssessmentAttempt.assessment_id == assessment.id,
-        )
-    )
-    for section_id, question_id in prior_question_ids:
-        previously_used[section_id].add(question_id)
-
     position = 0
-    eligible_pools = _eligible_pools(db, [section.id for section in sections])
     for section in sections:
-        pool = eligible_pools.get(section.id, [])
-        unseen = [
-            question
-            for question in pool
-            if question.id not in previously_used[section.id]
-            and question.id not in used_in_current_attempt
-        ]
-        if len(unseen) >= section.question_count:
-            chosen = secrets.SystemRandom().sample(unseen, section.question_count)
-        else:
-            chosen = list(unseen)
-            chosen_ids = {item.id for item in chosen} | used_in_current_attempt
-            remaining = [question for question in pool if question.id not in chosen_ids]
-            chosen.extend(secrets.SystemRandom().sample(remaining, section.question_count - len(chosen)))
-        if config.randomize_questions:
-            secrets.SystemRandom().shuffle(chosen)
+        chosen = selected_by_section[section.id]
 
         for question in chosen:
-            used_in_current_attempt.add(question.id)
             options = _validate_question_content(question)
             option_ids = [option["id"] for option in options]
             if config.randomize_options:
@@ -651,6 +771,217 @@ def create_attempt(
             )
             position += 1
 
+    db.commit()
+    db.refresh(attempt)
+    return _attempt_out(db, attempt, assessment, now=now)
+
+
+async def create_similar_practice(
+    db: Session,
+    candidate_session: CandidateSession,
+    payload: PracticeSimilarIn,
+    idempotency_key: str,
+) -> AttemptOut:
+    locked_session = db.scalar(
+        select(CandidateSession)
+        .where(CandidateSession.id == candidate_session.id)
+        .with_for_update()
+    )
+    if locked_session is None:
+        raise DomainError(401, "candidate_session_invalid", "The candidate session is invalid or expired.")
+
+    existing = db.scalar(select(AssessmentAttempt).where(
+        AssessmentAttempt.candidate_session_id == candidate_session.id,
+        AssessmentAttempt.idempotency_key == idempotency_key,
+    ))
+    if existing is not None:
+        if not (existing.title_override or "").startswith("Similar practice:"):
+            raise DomainError(409, "idempotency_key_reused", "This idempotency key was already used.")
+        source_id = payload.source_attempt_id or db.scalar(
+            select(AssessmentAttempt.id)
+            .where(
+                AssessmentAttempt.candidate_session_id == candidate_session.id,
+                AssessmentAttempt.status.in_(("submitted", "expired")),
+            )
+            .order_by(AssessmentAttempt.submitted_at.desc())
+            .limit(1)
+        )
+        if source_id is not None:
+            source_attempt, _, _ = _load_owned_attempt(db, source_id, candidate_session.id)
+            matches = existing.assessment_id == source_attempt.assessment_id
+        else:
+            matches = existing.assessment_id == db.scalar(
+                select(Assessment.id).where(Assessment.status == "published").order_by(Assessment.title).limit(1)
+            )
+        if not matches:
+            raise DomainError(409, "idempotency_key_reused", "This idempotency key was already used.")
+        db.commit()
+        assessment = db.get(Assessment, existing.assessment_id)
+        if assessment is None:
+            raise DomainError(404, "assessment_not_found", "The assessment was not found.")
+        return _attempt_out(db, existing, assessment)
+
+    source_attempt_id = payload.source_attempt_id
+    if source_attempt_id is None:
+        source_attempt_id = db.scalar(
+            select(AssessmentAttempt.id)
+            .where(
+                AssessmentAttempt.candidate_session_id == candidate_session.id,
+                AssessmentAttempt.status.in_(("submitted", "expired")),
+            )
+            .order_by(AssessmentAttempt.submitted_at.desc())
+            .limit(1)
+        )
+    if source_attempt_id is not None:
+        source_attempt, assessment, config = _load_owned_attempt(
+            db, source_attempt_id, candidate_session.id, lock=True
+        )
+        sections = _sections(db, config.id)
+    else:
+        if payload.question_id is not None:
+            raise DomainError(409, "practice_history_required", "Complete an assessment before generating a similar missed question.")
+        assessment = db.scalar(
+            select(Assessment)
+            .where(Assessment.status == "published", Assessment.ai_generation_enabled.is_(True))
+            .order_by(Assessment.title)
+            .limit(1)
+        )
+        if assessment is None:
+            raise DomainError(503, "practice_unavailable", "No AI-enabled assessment blueprint is available.")
+        config = _published_config(db, assessment)
+        if config is None:
+            raise DomainError(409, "assessment_config_missing", "The practice blueprint has no published configuration.")
+        sections = _sections(db, config.id)
+        source_attempt = None
+    if not sections:
+        raise DomainError(409, "assessment_config_missing", "The source assessment has no sections.")
+
+    target_section = sections[0]
+    target_topic = payload.topics[0] if payload.topics else ""
+    if payload.question_id is not None:
+        if source_attempt is None:
+            raise DomainError(409, "practice_history_required", "Complete an assessment before generating a similar missed question.")
+        target = db.execute(
+            select(AttemptQuestion, QuestionVersion)
+            .join(QuestionVersion, QuestionVersion.id == AttemptQuestion.question_version_id)
+            .where(
+                AttemptQuestion.attempt_id == source_attempt.id,
+                AttemptQuestion.id == payload.question_id,
+            )
+        ).first()
+        if target is None:
+            raise DomainError(404, "attempt_question_not_found", "The requested missed question was not found.")
+        target_section = next(section for section in sections if section.id == target[0].section_id)
+        target_topic = target[1].topic
+    elif target_topic:
+        topic_section_id = None
+        if source_attempt is not None:
+            topic_section_id = db.scalar(
+                select(AttemptQuestion.section_id)
+                .join(QuestionVersion, QuestionVersion.id == AttemptQuestion.question_version_id)
+                .where(
+                    AttemptQuestion.attempt_id == source_attempt.id,
+                    QuestionVersion.topic == target_topic,
+                )
+                .limit(1)
+            )
+            if topic_section_id is not None:
+                target_section = next(section for section in sections if section.id == topic_section_id)
+        if topic_section_id is None:
+            target_section = next(
+                (
+                    section for section in sections
+                    if target_topic in _topics_for_section(section, assessment.blueprint_topics)
+                ),
+                target_section,
+            )
+
+    previously_used_ids = tuple(str(question_id) for (question_id,) in db.execute(
+        select(AttemptQuestion.question_version_id)
+        .join(AssessmentAttempt, AssessmentAttempt.id == AttemptQuestion.attempt_id)
+        .where(AssessmentAttempt.candidate_session_id == candidate_session.id)
+    ))
+    try:
+        generated = await ai_question_generator.generate_questions(
+            ai_question_generator.GenerationRequest(
+                section_title=target_section.title,
+                topics=(target_topic or target_section.title,),
+                count=payload.question_count,
+                difficulty="medium",
+                scenario_seed=secrets.token_urlsafe(24),
+                previously_used_ids=previously_used_ids,
+            )
+        )
+    except RuntimeError as error:
+        db.rollback()
+        raise DomainError(
+            503,
+            "question_generation_failed",
+            "Similar practice questions could not be generated and validated. Please try again.",
+        ) from error
+
+    generated_at = utc_now()
+    questions: list[QuestionVersion] = []
+    for item in generated:
+        question = QuestionVersion(
+            logical_id=uuid.uuid4(),
+            version_number=1,
+            status="published",
+            question_type="single_choice",
+            prompt=item.prompt,
+            stimulus=item.stimulus.model_dump(mode="json") if item.stimulus else None,
+            topic=item.topic,
+            difficulty=item.difficulty,
+            options=[option.model_dump(mode="json") for option in item.options],
+            correct_answer=item.correct_answer,
+            explanation=item.explanation,
+            marks=target_section.marks_per_question,
+            negative_marks=target_section.negative_marks,
+            verified_at=generated_at,
+            source_reference="ai_generated",
+        )
+        db.add(question)
+        db.flush()
+        db.add(AssessmentQuestionPool(
+            section_id=target_section.id,
+            question_version_id=question.id,
+        ))
+        questions.append(question)
+
+    now = utc_now()
+    duration_seconds = min(config.duration_seconds, payload.question_count * 60)
+    attempt = AssessmentAttempt(
+        candidate_session_id=candidate_session.id,
+        assessment_id=assessment.id,
+        config_version_id=config.id,
+        idempotency_key=idempotency_key,
+        status="in_progress",
+        started_at=now,
+        deadline_at=now + timedelta(seconds=duration_seconds),
+        duration_seconds=duration_seconds,
+        title_override=f"Similar practice: {target_topic or target_section.title}"[:200],
+    )
+    db.add(attempt)
+    db.flush()
+    rng = secrets.SystemRandom()
+    if config.randomize_questions:
+        rng.shuffle(questions)
+    for position, question in enumerate(questions):
+        options = _validate_question_content(question)
+        option_order = [option["id"] for option in options]
+        if config.randomize_options:
+            rng.shuffle(option_order)
+        db.add(AttemptQuestion(
+            attempt_id=attempt.id,
+            section_id=target_section.id,
+            question_version_id=question.id,
+            position=position,
+            option_order=option_order,
+            marks=target_section.marks_per_question,
+            negative_marks=target_section.negative_marks,
+            time_spent_seconds=0,
+            visited_at=now if position == 0 else None,
+        ))
     db.commit()
     db.refresh(attempt)
     return _attempt_out(db, attempt, assessment, now=now)

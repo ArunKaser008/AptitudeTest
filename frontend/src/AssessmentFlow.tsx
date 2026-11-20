@@ -34,6 +34,7 @@ import {
   type AssessmentQuestion,
   type AssessmentSummary,
 } from "./services/assessmentApi";
+import { startSimilarPractice } from "./services/candidateApi";
 
 function errorMessage(error: unknown): string {
   if (error instanceof AssessmentApiError) {
@@ -61,7 +62,7 @@ export function AssessmentCatalogPage() {
   const navigate = useNavigate();
   const assessmentsQuery = useQuery({
     queryKey: ["available-assessments"],
-    queryFn: listAssessments,
+    queryFn: () => listAssessments(),
   });
   const [startingSlug, setStartingSlug] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -69,18 +70,20 @@ export function AssessmentCatalogPage() {
   const [sectionFilter, setSectionFilter] = useState("");
   const [difficultyFilter, setDifficultyFilter] = useState<"easy" | "medium" | "hard" | "">("");
   const [durationFilter, setDurationFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<"aptitude" | "company_mock" | "">("");
 
   const visibleAssessments = assessmentsQuery.data?.filter((assessment) => {
-    const searchText = `${assessment.title} ${assessment.description} ${assessment.sections.map((section) => section.title).join(" ")}`.toLowerCase();
+    const searchText = `${assessment.title} ${assessment.description} ${assessment.target_role ?? ""} ${assessment.sections.map((section) => section.title).join(" ")}`.toLowerCase();
     const matchesSearch = searchText.includes(search.trim().toLowerCase());
     const matchesSection = !sectionFilter || assessment.sections.some((section) => section.title === sectionFilter);
     const matchesDifficulty = !difficultyFilter || (assessment.difficulties ?? []).some((value) => value === difficultyFilter);
+    const matchesCategory = !categoryFilter || assessment.category === categoryFilter;
     const durationMinutes = assessment.duration_seconds / 60;
     const matchesDuration = !durationFilter
       || (durationFilter === "short" && durationMinutes <= 15)
       || (durationFilter === "medium" && durationMinutes > 15 && durationMinutes <= 45)
       || (durationFilter === "long" && durationMinutes > 45);
-    return matchesSearch && matchesSection && matchesDifficulty && matchesDuration;
+    return matchesSearch && matchesSection && matchesDifficulty && matchesDuration && matchesCategory;
   });
   const sections = [...new Set((assessmentsQuery.data ?? []).flatMap((assessment) => assessment.sections.map((section) => section.title)))].sort();
   const difficulties = [...new Set((assessmentsQuery.data ?? []).flatMap((assessment) => assessment.difficulties ?? []))].sort();
@@ -129,6 +132,14 @@ export function AssessmentCatalogPage() {
               {sections.map((section) => <option key={section}>{section}</option>)}
             </select>
           </label>
+          <label className="catalog-filter-select">
+            <span className="sr-only">Filter by assessment type</span>
+            <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as typeof categoryFilter)}>
+              <option value="">All assessment types</option>
+              <option value="aptitude">Aptitude</option>
+              <option value="company_mock">Company-style mock</option>
+            </select>
+          </label>
           <div className="catalog-filter-chips" aria-label="Difficulty">
             <button className={!difficultyFilter ? "active" : ""} onClick={() => setDifficultyFilter("")}>Any difficulty</button>
             {difficulties.map((difficulty) => (
@@ -160,13 +171,23 @@ export function AssessmentCatalogPage() {
         </div>
       )}
       {startError && <p className="assessment-inline-error" role="alert">{startError}</p>}
+      {startingSlug && (
+        <div className="panel assessment-state" role="status">
+          <span className="loading-spinner" />
+          Generating unique questions for your session…
+        </div>
+      )}
       {assessmentsQuery.isLoading && <LoadingPanel message="Loading published assessments…" />}
       {assessmentsQuery.isError && <ErrorPanel error={assessmentsQuery.error} onRetry={() => void assessmentsQuery.refetch()} />}
       {assessmentsQuery.data?.length === 0 && (
         <div className="panel empty-assessments">
           <span className="empty-assessment-icon"><ShieldCheck size={22} /></span>
           <h2>No assessments are published yet</h2>
-          <p>Assessments appear here after verified questions and assessment rules are approved and published.</p>
+          <p>Published blueprints prepare fresh, validated questions when you start. You can also build a focused practice set or visit the studio.</p>
+          <div className="empty-assessment-actions">
+            <Link to="/studio" className="button button-outline">Open Assessment studio</Link>
+            <Link to="/practice" className="button button-primary">Go to Practice zone</Link>
+          </div>
         </div>
       )}
       {visibleAssessments && visibleAssessments.length === 0 && assessmentsQuery.data && assessmentsQuery.data.length > 0 && (
@@ -182,6 +203,7 @@ export function AssessmentCatalogPage() {
               </div>
               <h3>{assessment.title}</h3>
               <p className="assessment-description">{assessment.description}</p>
+              {assessment.target_role && <span className="assessment-role-chip">{assessment.target_role}</span>}
               <div className="assessment-meta">
                 <span><FileQuestion size={15} />{assessment.question_count} questions</span>
                 <span><Clock3 size={15} />{Math.ceil(assessment.duration_seconds / 60)} min</span>
@@ -197,7 +219,11 @@ export function AssessmentCatalogPage() {
                 disabled={startingSlug !== null}
                 onClick={() => void begin(assessment)}
               >
-                {startingSlug === assessment.slug ? "Starting…" : "Start assessment"}
+                {startingSlug === assessment.slug
+                  ? assessment.ai_generation_enabled
+                    ? "Generating unique questions…"
+                    : "Starting…"
+                  : "Start assessment"}
                 <ArrowRight size={16} />
               </button>
             </article>
@@ -270,6 +296,10 @@ export function AssessmentExamPage() {
     try {
       const elapsed = Math.max(0, Math.floor((Date.now() - questionEnteredAt.current) / 1000));
       await submitAssessment(attempt.id, currentQuestion?.id, currentQuestion ? elapsed : 0);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["candidate-performance"] }),
+        queryClient.invalidateQueries({ queryKey: ["candidate-recommendations"] }),
+      ]);
       navigate(`/results/${attempt.id}`, { replace: true });
     } catch (error) {
       setSubmitError(errorMessage(error));
@@ -629,6 +659,7 @@ export function AssessmentResultsPage() {
   const navigate = useNavigate();
   const [startingPractice, setStartingPractice] = useState(false);
   const [practiceError, setPracticeError] = useState<string | null>(null);
+  const [startingSimilarQuestion, setStartingSimilarQuestion] = useState<string | null>(null);
   const resultQuery = useQuery({
     queryKey: ["assessment-result", attemptId],
     queryFn: () => getAssessmentResult(attemptId),
@@ -664,6 +695,23 @@ export function AssessmentResultsPage() {
       setPracticeError(errorMessage(error));
     } finally {
       setStartingPractice(false);
+    }
+  };
+  const startSimilarQuestionPractice = async (questionId: string, topic: string) => {
+    setStartingSimilarQuestion(questionId);
+    setPracticeError(null);
+    try {
+      const attempt = await startSimilarPractice({
+        source_attempt_id: result.attempt_id,
+        question_id: questionId,
+        topics: [topic],
+        question_count: 5,
+      });
+      navigate(`/exam/${attempt.id}`);
+    } catch (error) {
+      setPracticeError(errorMessage(error));
+    } finally {
+      setStartingSimilarQuestion(null);
     }
   };
 
@@ -763,12 +811,14 @@ export function AssessmentResultsPage() {
             const status = question.is_correct === null
               ? question.answer ? "Answered" : "Unanswered"
               : question.is_correct ? "Correct" : "Incorrect";
+            const isTimeSink = question.is_correct === false
+              || (averageQuestionTime > 0 && question.time_spent_seconds > averageQuestionTime * 1.5);
             return (
               <article className="answer-review-item" key={question.question_id}>
                 <div className="answer-review-heading">
                   <span>Q{index + 1} · {question.topic}</span>
                   <strong>{status}</strong>
-                  {question.is_correct === false && question.time_spent_seconds > averageQuestionTime && (
+                  {isTimeSink && (
                     <span className="time-sink-badge">Time sink · {question.time_spent_seconds}s</span>
                   )}
                 </div>
@@ -777,6 +827,16 @@ export function AssessmentResultsPage() {
                 {question.answer && <small>Your answer: {selectedText}</small>}
                 {question.correct_answer && <small>Correct answer: {correctText}</small>}
                 {question.explanation && <div className="answer-review-explanation">{question.explanation}</div>}
+                {question.is_correct !== true && (
+                  <button
+                    className="button button-outline weak-topics-cta"
+                    disabled={startingSimilarQuestion !== null}
+                    onClick={() => void startSimilarQuestionPractice(question.question_id, question.topic)}
+                  >
+                    {startingSimilarQuestion === question.question_id ? "Generating similar practice…" : "Generate similar practice questions"}
+                    <ArrowRight size={16} />
+                  </button>
+                )}
               </article>
             );
           })}

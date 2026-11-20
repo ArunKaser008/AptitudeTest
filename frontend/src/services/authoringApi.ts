@@ -47,6 +47,8 @@ export type AuthoringAssessment = {
   title: string;
   description: string;
   status: "draft" | "published" | "archived";
+  category?: "aptitude" | "company_mock" | "practice";
+  target_role?: string | null;
   config_version_id: string | null;
   config_version_number: number | null;
   config_status: "draft" | "published" | "archived" | null;
@@ -165,6 +167,10 @@ export function createAuthoringAssessment(payload: {
   slug: string;
   title: string;
   description: string;
+  category?: "aptitude" | "company_mock" | "practice";
+  target_role?: string | null;
+  ai_generation_enabled?: boolean;
+  blueprint_topics?: string[];
 } & AssessmentConfigDraft): Promise<AuthoringAssessment> {
   return requestAssessmentApi("/authoring/assessments", {
     method: "POST",

@@ -127,6 +127,8 @@ describe("authoring studio", () => {
       title: "Foundation Aptitude Test",
       description: "",
       status: "draft",
+      category: "aptitude",
+      target_role: "IT Services",
       config_version_id: "60000000-0000-4000-8000-000000000001",
       config_version_number: 1,
       config_status: "draft",

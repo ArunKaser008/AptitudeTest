@@ -1,4 +1,5 @@
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,10 +16,22 @@ from app.services.assessment_service import DomainError
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if settings.seed_default_assessments:
+        from app.seed import seed_default_assessments
+
+        with SessionLocal() as db:
+            seed_default_assessments(db)
+    yield
+
+
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
     description="Database-backed placement readiness assessment API.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

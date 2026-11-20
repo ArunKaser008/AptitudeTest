@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,8 @@ from app.models import (
     QuestionVersion,
 )
 from app.schemas import AttemptResultOut
+from app.seed import seed_default_assessments
+from app.services import assessment_service
 
 
 @pytest.fixture
@@ -68,6 +71,7 @@ def add_published_assessment(
         title="Foundation Aptitude Test",
         description="A verified aptitude assessment.",
         status="published",
+        ai_generation_enabled=False,
     )
     config = AssessmentConfigVersion(
         id=uuid.uuid4(),
@@ -660,3 +664,124 @@ def test_assessment_authoring_requires_ready_pools_before_publish(
     assert published.status_code == 200
     assert published.json()["status"] == "published"
     assert published.json()["config_status"] == "published"
+
+
+def test_ai_blueprints_generate_parallel_unique_questions_before_timer_starts(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_default_assessments(db_session)
+    token = create_candidate(client)
+    headers = {"X-Candidate-Token": token}
+    original_generate = assessment_service.ai_question_generator.generate_questions
+    active = 0
+    maximum_active = 0
+    completed_at: list[datetime] = []
+
+    async def delayed_generate(request):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            return await original_generate(request)
+        finally:
+            active -= 1
+            completed_at.append(datetime.now(timezone.utc))
+
+    monkeypatch.setattr(
+        assessment_service.ai_question_generator,
+        "generate_questions",
+        delayed_generate,
+    )
+    first = client.post(
+        "/api/v1/attempts",
+        headers={**headers, "Idempotency-Key": "ai-blueprint-first-attempt"},
+        json={"assessment_slug": "it-services-cognitive-quant-drive"},
+    )
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+    details = client.get(f"/api/v1/attempts/{first_id}", headers=headers)
+    assert details.status_code == 200
+    first_question_ids = {item["id"] for item in details.json()["questions"]}
+    assert len(first_question_ids) == 15
+    assert maximum_active > 1
+    persisted_started_at = datetime.fromisoformat(first.json()["started_at"]).replace(tzinfo=timezone.utc)
+    assert persisted_started_at >= max(completed_at)
+
+    second = client.post(
+        "/api/v1/attempts",
+        headers={**headers, "Idempotency-Key": "ai-blueprint-second-attempt"},
+        json={"assessment_slug": "it-services-cognitive-quant-drive"},
+    )
+    assert second.status_code == 201
+    second_details = client.get(f"/api/v1/attempts/{second.json()['id']}", headers=headers)
+    second_question_ids = {item["id"] for item in second_details.json()["questions"]}
+    assert len(second_question_ids) == 15
+    assert first_question_ids.isdisjoint(second_question_ids)
+
+    idempotent = client.post(
+        "/api/v1/attempts",
+        headers={**headers, "Idempotency-Key": "ai-blueprint-second-attempt"},
+        json={"assessment_slug": "it-services-cognitive-quant-drive"},
+    )
+    assert idempotent.status_code == 201
+    assert idempotent.json()["id"] == second.json()["id"]
+
+
+def test_candidate_performance_recommendations_and_similar_practice(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    seed_default_assessments(db_session)
+    token = create_candidate(client)
+    headers = {"X-Candidate-Token": token}
+    started = client.post(
+        "/api/v1/attempts",
+        headers={**headers, "Idempotency-Key": "analytics-source-attempt-key"},
+        json={"assessment_slug": "product-sde-analytical-cs-aptitude"},
+    )
+    assert started.status_code == 201
+    attempt_id = started.json()["id"]
+    details = client.get(f"/api/v1/attempts/{attempt_id}", headers=headers).json()
+    first = details["questions"][0]
+    attempt_question = db_session.get(AttemptQuestion, uuid.UUID(first["id"]))
+    assert attempt_question is not None
+    question_version = db_session.get(QuestionVersion, attempt_question.question_version_id)
+    assert question_version is not None
+    correct_id = question_version.correct_answer["option_id"]
+    wrong_id = next(option["id"] for option in first["options"] if option["id"] != correct_id)
+    saved = client.put(
+        f"/api/v1/attempts/{attempt_id}/responses/{first['id']}",
+        headers=headers,
+        json={"answer": {"option_id": wrong_id}, "time_spent_seconds": 90},
+    )
+    assert saved.status_code == 200
+    submitted = client.post(f"/api/v1/attempts/{attempt_id}/submit", headers=headers)
+    assert submitted.status_code == 200
+
+    performance = client.get("/api/v1/candidate/performance", headers=headers)
+    assert performance.status_code == 200
+    assert performance.json()["completed_attempts"] == 1
+    assert performance.json()["trend"][0]["assessment_slug"] == "product-sde-analytical-cs-aptitude"
+    assert any(item["incorrect"] == 1 and item["avg_time_seconds"] > 0 for item in performance.json()["topics"])
+
+    recommendations = client.get("/api/v1/candidate/recommendations", headers=headers)
+    assert recommendations.status_code == 200
+    assert recommendations.json()["count"] == len(recommendations.json()["items"])
+    assert any(item["kind"] == "weak_topic" for item in recommendations.json()["items"])
+    assert any(item["kind"] == "progression" for item in recommendations.json()["items"])
+
+    similar = client.post(
+        "/api/v1/practice/similar",
+        headers={**headers, "Idempotency-Key": "similar-practice-drill-key"},
+        json={"source_attempt_id": attempt_id, "question_id": first["id"], "question_count": 3},
+    )
+    assert similar.status_code == 201
+    drill_questions = client.get(
+        f"/api/v1/attempts/{similar.json()['id']}",
+        headers=headers,
+    ).json()["questions"]
+    assert len(drill_questions) == 3
+    assert all(item["topic"] == first["topic"] for item in drill_questions)
