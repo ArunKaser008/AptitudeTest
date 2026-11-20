@@ -47,9 +47,11 @@ function createAssessmentApiMock({
     sections: [{ title: "Quantitative", question_count: 10 }],
   }],
   durationSeconds = 600,
+  initialIncorrectTimeSink = false,
 }: {
   assessments?: Array<Record<string, unknown>>;
   durationSeconds?: number;
+  initialIncorrectTimeSink?: boolean;
 } = {}) {
   const questions = Array.from({ length: 10 }, (_, index) => ({
     id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -70,6 +72,7 @@ function createAssessmentApiMock({
   }));
   let currentPosition = 0;
   const answers: Record<string, string> = {};
+  if (initialIncorrectTimeSink) answers[questions[0].id] = "option-b";
   const marked: Record<string, boolean> = {};
   const attemptId = "20000000-0000-4000-8000-000000000001";
 
@@ -98,17 +101,27 @@ function createAssessmentApiMock({
         unanswered: 10 - attempted,
         accuracy_percent: attempted ? correct / attempted * 100 : 0,
       }],
+      topics: [{
+        topic: "Topic 1",
+        correct,
+        incorrect: attempted - correct,
+        unanswered: 10 - attempted,
+        accuracy_percent: attempted ? correct / attempted * 100 : 0,
+        avg_time_seconds: 12,
+      }],
       review: questions.map((question) => ({
         question_id: question.id,
         position: question.position,
         section: question.section,
         topic: question.topic,
         prompt: question.prompt,
+        stimulus: null,
         options: question.options,
         answer: answers[question.id] ? { option_id: answers[question.id] } : null,
         correct_answer: { option_id: "option-a" },
         explanation: "This answer follows from the question data.",
         is_correct: answers[question.id] ? answers[question.id] === "option-a" : null,
+        time_spent_seconds: question.position === 0 ? 20 : 2,
       })),
     };
   };
@@ -126,6 +139,9 @@ function createAssessmentApiMock({
       return respond({ session_token: "candidate-test-token", expires_at: new Date(Date.now() + 86_400_000).toISOString() }, 201);
     }
     if (path === "/assessments" && method === "GET") return respond(assessments);
+    if (path === "/practice-weak-topics" && method === "POST") {
+      return respond({ id: attemptId, title: "Focused practice", question_count: 10 }, 201);
+    }
     if (path === "/attempts" && method === "POST") {
       const now = Date.now();
       currentPosition = 0;
@@ -409,7 +425,7 @@ describe("student workspace preview", () => {
   it("uses the server assessment total from start through submitted results", async () => {
     sessionStorage.clear();
     const user = userEvent.setup();
-    createAssessmentApiMock();
+    const { fetcher } = createAssessmentApiMock();
     renderApp("/aptitude");
 
     await user.click(await screen.findByRole("button", { name: /start assessment/i }));
@@ -422,11 +438,28 @@ describe("student workspace preview", () => {
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Submit assessment" }));
 
     expect(await screen.findByText(/Foundation Aptitude Test · 10 questions/)).toBeInTheDocument();
+    const submitCall = fetcher.mock.calls.find(([input]) => new URL(String(input)).pathname.endsWith("/submit"));
+    const submitBody = JSON.parse(String(submitCall?.[1]?.body)) as {
+      question_id: string;
+      time_spent_seconds: number;
+    };
+    expect(submitBody.question_id).toBe("10000000-0000-4000-8000-000000000001");
+    expect(submitBody.time_spent_seconds).toBeGreaterThanOrEqual(0);
     expect(screen.getByText("10", { selector: ".donut-center strong" })).toBeInTheDocument();
     expect(screen.getByText("100%", { selector: ".results-stats strong" })).toBeInTheDocument();
     expect(screen.getAllByText("Unanswered").length).toBeGreaterThan(0);
     expect(screen.getByText("1", { selector: ".breakdown-legend strong" })).toBeInTheDocument();
     expect(screen.getByText("9", { selector: ".breakdown-legend strong" })).toBeInTheDocument();
     expect(screen.getAllByText(/Correct answer:/)).toHaveLength(10);
+  });
+
+  it("renders topic diagnostics and flags slow incorrect answers as time sinks", async () => {
+    createAssessmentApiMock({ initialIncorrectTimeSink: true });
+    renderApp("/results/20000000-0000-4000-8000-000000000001");
+
+    expect(await screen.findByRole("heading", { name: "Topic performance & speed" })).toBeInTheDocument();
+    expect(screen.getByText("Time sink · 20s")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: /practice my weakest topics/i }));
+    expect(await screen.findByRole("heading", { name: "Production assessment question 1" })).toBeInTheDocument();
   });
 });

@@ -43,6 +43,7 @@ import {
 } from "recharts";
 import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { AssessmentCatalogPage, AssessmentExamPage, AssessmentResultsPage } from "./AssessmentFlow";
+import { AuthoringPage } from "./AuthoringFlow";
 import { PageHeading } from "./components/PageHeading";
 import { allAssessmentQuestions, assessmentQuestionBanks } from "./data/assessmentQuestionBanks";
 import {
@@ -92,7 +93,7 @@ const navGroups = [
   },
   {
     label: "ADMINISTRATION",
-    links: [{ to: "/admin/questions", label: "Question bank", icon: Settings }],
+    links: [{ to: "/aptitude/manage", label: "Assessment studio", icon: Settings }],
   },
 ];
 
@@ -163,11 +164,12 @@ function App() {
             <Route path="/aptitude" element={<AssessmentCatalogPage />} />
             <Route path="/exam/:assessmentId" element={<AssessmentExamPage />} />
             <Route path="/results/:assessmentId" element={<AssessmentResultsPage />} />
+            <Route path="/aptitude/manage" element={<AuthoringPage />} />
+            <Route path="/admin/questions" element={<AuthoringPage />} />
             <Route path="/practice" element={<PracticePage />} />
             <Route path="/performance" element={<PerformancePage />} />
             <Route path="/companies" element={<CompaniesPage />} />
             <Route path="/recommendations" element={<RecommendationsPage />} />
-            <Route path="/admin/questions" element={<QuestionBankPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>
@@ -561,7 +563,7 @@ function RecommendationsPage() {
   </>;
 }
 
-function QuestionBankPage() {
+export function QuestionBankPage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All statuses");
   const [category, setCategory] = useState("All categories");

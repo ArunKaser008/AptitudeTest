@@ -131,7 +131,7 @@ class QuestionVersion(TimestampMixin, Base):
             name="ck_question_version_status",
         ),
         CheckConstraint(
-            "question_type IN ('single_choice')",
+            "question_type IN ('single_choice', 'multi_choice', 'numeric')",
             name="ck_question_type_supported",
         ),
         CheckConstraint(
@@ -152,7 +152,7 @@ class QuestionVersion(TimestampMixin, Base):
     topic: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     options: Mapped[list[dict[str, str]]] = mapped_column(json_document, nullable=False)
-    correct_answer: Mapped[dict[str, str]] = mapped_column(json_document, nullable=False)
+    correct_answer: Mapped[dict[str, Any]] = mapped_column(json_document, nullable=False)
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     marks: Mapped[float] = mapped_column(nullable=False, default=1)
     negative_marks: Mapped[float] = mapped_column(nullable=False, default=0)
@@ -204,6 +204,8 @@ class AssessmentAttempt(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="in_progress", index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    title_override: Mapped[str | None] = mapped_column(String(200))
     current_position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     score: Mapped[float | None] = mapped_column()
@@ -251,4 +253,4 @@ class AttemptResponse(TimestampMixin, Base):
         nullable=False,
         index=True,
     )
-    answer: Mapped[dict[str, str]] = mapped_column(json_document, nullable=False)
+    answer: Mapped[dict[str, Any]] = mapped_column(json_document, nullable=False)

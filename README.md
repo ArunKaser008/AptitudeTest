@@ -1,14 +1,14 @@
 # MentorMuni Placement Aptitude
 
-MentorMuni Placement Aptitude is a placement-readiness assessment product organized around **Measure → Improve → Prove**. This repository is in the first implementation phase: the responsive student experience currently uses clearly identified sample data, while the API is a configured FastAPI service foundation.
+MentorMuni Placement Aptitude is a placement-readiness assessment product organized around **Measure → Improve → Prove**.
 
 ## Current status
 
-- The React + TypeScript workspace includes dashboard, assessment discovery and delivery, practice, results, analytics, company simulations, recommendations, and a question-bank preview.
-- The aptitude catalog, exam, and results routes use the FastAPI assessment API. Attempts, candidate sessions, responses, server deadlines, scoring, and result snapshots are persisted in PostgreSQL.
-- The remaining dashboard, practice, analytics, company, recommendation, and question-bank screens still use clearly labeled sample data.
-- The production question bank is intentionally empty until verified question content is approved and loaded. The catalog therefore shows “No assessments are published yet” on a fresh install.
-- The assessment API currently supports verified single-choice questions. Admin authentication and question authoring/import are not yet implemented.
+- The React + TypeScript workspace includes an assessment catalog, server-backed timed exams and results with topic/time diagnostics, and an assessment authoring studio.
+- The FastAPI + PostgreSQL backend supports versioned assessments and questions, verified question pools, CSV/JSON imports, multi-choice and numeric questions, immutable result snapshots, and weak-topic practice.
+- Dashboard, practice-zone, analytics, company-simulation, and recommendation areas still include sample data; do not treat them as candidate evaluation records.
+- A fresh database intentionally has no published assessments. Create and review content in `/aptitude/manage` before publishing.
+- **Deployment boundary:** authoring APIs and the `/aptitude/manage` workspace do not have authentication/authorization yet. Keep them private and do not expose this service publicly until admin access controls are implemented.
 
 ## Run locally
 
@@ -47,4 +47,4 @@ Set-Location backend
 python -m pytest
 ```
 
-See [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md), and [API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) for the approved direction and current implementation boundaries.
+See [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md), and [API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) for implementation details and current boundaries.

@@ -9,12 +9,14 @@ from app.schemas import (
     AttemptCreateIn,
     AttemptDetailOut,
     AttemptOut,
+    AttemptSubmitIn,
     AttemptResultOut,
     CandidateSessionOut,
     PositionUpdateIn,
     ResponseIn,
     ResponseOut,
     ReviewFlagIn,
+    WeakTopicPracticeIn,
 )
 from app.services import assessment_service
 
@@ -33,6 +35,25 @@ def create_candidate_session(db: DatabaseSession) -> CandidateSessionOut:
 @router.get("/assessments", response_model=list[AssessmentOut])
 def list_assessments(db: DatabaseSession) -> list[AssessmentOut]:
     return assessment_service.list_available_assessments(db)
+
+
+@router.post(
+    "/practice-weak-topics",
+    response_model=AttemptOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_weak_topic_practice(
+    payload: WeakTopicPracticeIn,
+    db: DatabaseSession,
+    candidate: Candidate,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=100)],
+) -> AttemptOut:
+    return assessment_service.create_weak_topic_practice(
+        db,
+        candidate,
+        payload.source_attempt_id,
+        idempotency_key,
+    )
 
 
 @router.post(
@@ -140,8 +161,15 @@ def submit_attempt(
     attempt_id: UUID,
     db: DatabaseSession,
     candidate: Candidate,
+    payload: AttemptSubmitIn | None = None,
 ) -> AttemptResultOut:
-    return assessment_service.submit_attempt(db, candidate.id, attempt_id)
+    return assessment_service.submit_attempt(
+        db,
+        candidate.id,
+        attempt_id,
+        question_id=payload.question_id if payload else None,
+        time_spent_seconds=payload.time_spent_seconds if payload else 0,
+    )
 
 
 @router.get("/attempts/{attempt_id}/results", response_model=AttemptResultOut)

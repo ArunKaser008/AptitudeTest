@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-The MVP serves anonymous student assessment and practice flows plus protected question-bank administration. Student identity is optional. College and TPO workflows are future extensions; the schema and API are versioned so those capabilities can be added without making them prerequisites for the student MVP.
+The current implementation serves anonymous, server-backed assessment attempts and results, with a versioned question/assessment authoring API. Student identity is optional. College and TPO workflows are future extensions; the schema and API are versioned so those capabilities can be added without making them prerequisites for the student product.
 
 ## Repository layout
 
@@ -31,9 +31,11 @@ The API is organized as routers and validation schemas over application services
 
 The inspected MentorMuni homepage uses a deep navy canvas, white typography, warm amber calls to action, and a blue/teal-and-gold logo. The app carries this direction into a high-contrast dark workspace, retaining MentorMuni blue `#1A8FC4` for progress and information accents. Inter and Rethink Sans are used for readable body text and headings.
 
-## Initial implementation boundary
+## Current implementation boundary
 
-The frontend demo data is isolated in `frontend/src/data/mockData.ts` and `frontend/src/data/assessmentQuestionBanks.ts`, and explicitly labeled in the UI. Foundation, Advanced, and Company-style previews each draw from their own 20-question sample pool. Each 10-question set follows its assessment's section distribution and avoids recently used questions in the current browser tab until that assessment's pool cycles. The exact selected IDs flow through navigation, refresh recovery, submission, and results. Preview duration scales the configured full-assessment duration by the preview question count (10 minutes for Foundation; 15 minutes for Advanced and Company-style). Assessment attempts use an absolute deadline; practice sets are timed at one minute per selected question. Deadline checks recalculate after focus/visibility changes so time cannot be paused by refresh or backgrounding. Preview attempt state/history use `sessionStorage` only and are not candidate identity or production persistence. API requests and database persistence are not yet integrated. The API currently provides health/OpenAPI only. Both flows must not be used for real candidate evaluation.
+The aptitude catalog, exam, and result screens use the assessment API. Candidate sessions, randomized attempt questions, responses, server-authoritative deadlines, locking, deterministic scoring, result snapshots, topic/time diagnostics, and weak-topic drills are persisted in PostgreSQL. Questions support single choice, multiple choice, and numeric answers with optional passage/table/code stimuli. `/aptitude/manage` provides question-bank and assessment/pool authoring; a fresh installation has no published content.
+
+Other dashboard, practice-zone, analytics, company-simulation, and recommendation features still use sample data and are not candidate evaluation records. Admin authentication/authorization is not implemented: keep the authoring workspace and API private until access controls are added.
 
 ## Future extension points
 

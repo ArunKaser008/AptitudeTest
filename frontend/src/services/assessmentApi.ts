@@ -8,7 +8,18 @@ export type AssessmentSummary = {
   duration_seconds: number;
   question_count: number;
   sections: Array<{ title: string; question_count: number }>;
+  difficulties: Array<"easy" | "medium" | "hard">;
 };
+
+export type QuestionStimulus =
+  | { kind: "passage"; title?: string | null; content: string }
+  | { kind: "table"; title?: string | null; headers: string[]; rows: unknown[][] }
+  | { kind: "code"; title?: string | null; language: string; content: string };
+
+export type AssessmentAnswer =
+  | { option_id: string }
+  | { option_ids: string[] }
+  | { value: number };
 
 export type AssessmentQuestion = {
   id: string;
@@ -16,11 +27,11 @@ export type AssessmentQuestion = {
   section: string;
   topic: string;
   difficulty: "easy" | "medium" | "hard";
-  question_type: "single_choice";
+  question_type: "single_choice" | "multi_choice" | "numeric";
   prompt: string;
-  stimulus: Record<string, unknown> | null;
+  stimulus: QuestionStimulus | null;
   options: Array<{ id: string; text: string }>;
-  answer: { option_id: string } | null;
+  answer: AssessmentAnswer | null;
   marked_for_review: boolean;
   visited: boolean;
 };
@@ -48,6 +59,15 @@ export type SectionResult = {
   accuracy_percent: number;
 };
 
+export type TopicResult = {
+  topic: string;
+  correct: number;
+  incorrect: number;
+  unanswered: number;
+  accuracy_percent: number;
+  avg_time_seconds: number;
+};
+
 export type AssessmentResult = {
   attempt_id: string;
   assessment_slug: string;
@@ -62,17 +82,20 @@ export type AssessmentResult = {
   attempt_rate_percent: number;
   elapsed_seconds: number;
   sections: SectionResult[];
+  topics: TopicResult[];
   review: Array<{
     question_id: string;
     position: number;
     section: string;
     topic: string;
     prompt: string;
+    stimulus: QuestionStimulus | null;
     options: Array<{ id: string; text: string }>;
-    answer: { option_id: string } | null;
-    correct_answer: { option_id: string } | null;
+    answer: AssessmentAnswer | null;
+    correct_answer: AssessmentAnswer | null;
     explanation: string | null;
     is_correct: boolean | null;
+    time_spent_seconds: number;
   }>;
 };
 
@@ -105,7 +128,9 @@ async function request<T>(
   candidateToken?: string,
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+  if (init.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (candidateToken) headers.set("X-Candidate-Token", candidateToken);
 
   let response: Response;
@@ -186,6 +211,15 @@ export async function startAssessment(assessmentSlug: string): Promise<{ id: str
   }, candidateToken);
 }
 
+export async function startWeakTopicPractice(sourceAttemptId: string): Promise<{ id: string }> {
+  const candidateToken = await getCandidateToken();
+  return request<{ id: string; title: string; question_count: number }>("/practice-weak-topics", {
+    method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify({ source_attempt_id: sourceAttemptId }),
+  }, candidateToken);
+}
+
 export async function getAssessmentAttempt(attemptId: string): Promise<AssessmentAttempt> {
   const candidateToken = await getCandidateToken();
   return request<AssessmentAttempt>(`/attempts/${encodeURIComponent(attemptId)}`, {}, candidateToken);
@@ -194,14 +228,14 @@ export async function getAssessmentAttempt(attemptId: string): Promise<Assessmen
 export async function saveAssessmentResponse(
   attemptId: string,
   questionId: string,
-  optionId: string,
+  answer: AssessmentAnswer,
   timeSpentSeconds: number,
 ): Promise<void> {
   const candidateToken = await getCandidateToken();
   await request(`/attempts/${encodeURIComponent(attemptId)}/responses/${encodeURIComponent(questionId)}`, {
     method: "PUT",
     body: JSON.stringify({
-      answer: { option_id: optionId },
+      answer,
       time_spent_seconds: timeSpentSeconds,
     }),
   }, candidateToken);
@@ -243,10 +277,17 @@ export async function updateAssessmentQuestionPosition(
   return result.current_position;
 }
 
-export async function submitAssessment(attemptId: string): Promise<AssessmentResult> {
+export async function submitAssessment(
+  attemptId: string,
+  questionId?: string,
+  timeSpentSeconds = 0,
+): Promise<AssessmentResult> {
   const candidateToken = await getCandidateToken();
   return request<AssessmentResult>(`/attempts/${encodeURIComponent(attemptId)}/submit`, {
     method: "POST",
+    ...(questionId
+      ? { body: JSON.stringify({ question_id: questionId, time_spent_seconds: timeSpentSeconds }) }
+      : {}),
   }, candidateToken);
 }
 
@@ -254,3 +295,5 @@ export async function getAssessmentResult(attemptId: string): Promise<Assessment
   const candidateToken = await getCandidateToken();
   return request<AssessmentResult>(`/attempts/${encodeURIComponent(attemptId)}/results`, {}, candidateToken);
 }
+
+export { request as requestAssessmentApi };

@@ -16,7 +16,9 @@ import {
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeading } from "./components/PageHeading";
+import { StimulusBlock } from "./components/exam/StimulusBlock";
 import {
+  type AssessmentAnswer,
   AssessmentApiError,
   clearAssessmentResponse,
   getAssessmentAttempt,
@@ -26,6 +28,7 @@ import {
   setAssessmentQuestionReview,
   startAssessment,
   submitAssessment,
+  startWeakTopicPractice,
   updateAssessmentQuestionPosition,
   type AssessmentAttempt,
   type AssessmentQuestion,
@@ -62,6 +65,25 @@ export function AssessmentCatalogPage() {
   });
   const [startingSlug, setStartingSlug] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [sectionFilter, setSectionFilter] = useState("");
+  const [difficultyFilter, setDifficultyFilter] = useState<"easy" | "medium" | "hard" | "">("");
+  const [durationFilter, setDurationFilter] = useState("");
+
+  const visibleAssessments = assessmentsQuery.data?.filter((assessment) => {
+    const searchText = `${assessment.title} ${assessment.description} ${assessment.sections.map((section) => section.title).join(" ")}`.toLowerCase();
+    const matchesSearch = searchText.includes(search.trim().toLowerCase());
+    const matchesSection = !sectionFilter || assessment.sections.some((section) => section.title === sectionFilter);
+    const matchesDifficulty = !difficultyFilter || (assessment.difficulties ?? []).some((value) => value === difficultyFilter);
+    const durationMinutes = assessment.duration_seconds / 60;
+    const matchesDuration = !durationFilter
+      || (durationFilter === "short" && durationMinutes <= 15)
+      || (durationFilter === "medium" && durationMinutes > 15 && durationMinutes <= 45)
+      || (durationFilter === "long" && durationMinutes > 45);
+    return matchesSearch && matchesSection && matchesDifficulty && matchesDuration;
+  });
+  const sections = [...new Set((assessmentsQuery.data ?? []).flatMap((assessment) => assessment.sections.map((section) => section.title)))].sort();
+  const difficulties = [...new Set((assessmentsQuery.data ?? []).flatMap((assessment) => assessment.difficulties ?? []))].sort();
 
   const begin = async (assessment: AssessmentSummary) => {
     setStartingSlug(assessment.slug);
@@ -92,8 +114,51 @@ export function AssessmentCatalogPage() {
       </div>
       <div className="catalog-toolbar">
         <div><h2>Published assessments</h2><p>Only assessments with reviewed and verified questions are available here.</p></div>
-        {assessmentsQuery.data && <span className="catalog-count">{assessmentsQuery.data.length} available</span>}
+        {visibleAssessments && <span className="catalog-count">{visibleAssessments.length} available</span>}
       </div>
+      {assessmentsQuery.data && assessmentsQuery.data.length > 0 && (
+        <div className="catalog-filters" aria-label="Filter published assessments">
+          <label className="catalog-search">
+            <span className="sr-only">Search assessments and topics</span>
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search assessments or sections" />
+          </label>
+          <label className="catalog-filter-select">
+            <span className="sr-only">Filter by section</span>
+            <select value={sectionFilter} onChange={(event) => setSectionFilter(event.target.value)}>
+              <option value="">All sections</option>
+              {sections.map((section) => <option key={section}>{section}</option>)}
+            </select>
+          </label>
+          <div className="catalog-filter-chips" aria-label="Difficulty">
+            <button className={!difficultyFilter ? "active" : ""} onClick={() => setDifficultyFilter("")}>Any difficulty</button>
+            {difficulties.map((difficulty) => (
+              <button
+                key={difficulty}
+                className={difficultyFilter === difficulty ? "active" : ""}
+                onClick={() => setDifficultyFilter(difficultyFilter === difficulty ? "" : difficulty)}
+              >
+                {difficulty}
+              </button>
+            ))}
+          </div>
+          <div className="catalog-filter-chips" aria-label="Duration">
+            {[
+              ["", "Any duration"],
+              ["short", "Up to 15 min"],
+              ["medium", "16-45 min"],
+              ["long", "> 45 min"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                className={durationFilter === value ? "active" : ""}
+                onClick={() => setDurationFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {startError && <p className="assessment-inline-error" role="alert">{startError}</p>}
       {assessmentsQuery.isLoading && <LoadingPanel message="Loading published assessments…" />}
       {assessmentsQuery.isError && <ErrorPanel error={assessmentsQuery.error} onRetry={() => void assessmentsQuery.refetch()} />}
@@ -104,9 +169,12 @@ export function AssessmentCatalogPage() {
           <p>Assessments appear here after verified questions and assessment rules are approved and published.</p>
         </div>
       )}
-      {assessmentsQuery.data && assessmentsQuery.data.length > 0 && (
+      {visibleAssessments && visibleAssessments.length === 0 && assessmentsQuery.data && assessmentsQuery.data.length > 0 && (
+        <div className="panel empty-assessments"><h2>No assessments match those filters</h2><p>Try clearing one or more filters.</p></div>
+      )}
+      {visibleAssessments && visibleAssessments.length > 0 && (
         <div className="assessment-grid">
-          {assessmentsQuery.data.map((assessment, index) => (
+          {visibleAssessments.map((assessment, index) => (
             <article className="assessment-card" key={assessment.slug}>
               <div className="assessment-card-top">
                 <span className={`assessment-icon assessment-icon-${index % 3}`}><FileQuestion size={20} /></span>
@@ -157,6 +225,7 @@ export function AssessmentExamPage() {
   const [serverOffset, setServerOffset] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [numericDrafts, setNumericDrafts] = useState<Record<string, string>>({});
   const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -199,7 +268,8 @@ export function AssessmentExamPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await submitAssessment(attempt.id);
+      const elapsed = Math.max(0, Math.floor((Date.now() - questionEnteredAt.current) / 1000));
+      await submitAssessment(attempt.id, currentQuestion?.id, currentQuestion ? elapsed : 0);
       navigate(`/results/${attempt.id}`, { replace: true });
     } catch (error) {
       setSubmitError(errorMessage(error));
@@ -230,17 +300,21 @@ export function AssessmentExamPage() {
     autoSubmitAttempted.current = false;
   }, [attemptId]);
 
-  const saveOption = async (question: AssessmentQuestion, optionId: string) => {
+  const saveAnswer = async (question: AssessmentQuestion, answer: AssessmentAnswer | null) => {
     if (!attempt || saving) return;
     setSaving(true);
     setSaveError(null);
     const elapsed = Math.max(0, Math.floor((Date.now() - questionEnteredAt.current) / 1000));
     try {
-      await saveAssessmentResponse(attempt.id, question.id, optionId, elapsed);
+      if (answer === null) {
+        await clearAssessmentResponse(attempt.id, question.id);
+      } else {
+        await saveAssessmentResponse(attempt.id, question.id, answer, elapsed);
+      }
       patchAttempt((current) => ({
         ...current,
         questions: current.questions.map((item) => item.id === question.id
-          ? { ...item, answer: { option_id: optionId } }
+          ? { ...item, answer }
           : item),
       }));
       questionEnteredAt.current = Date.now();
@@ -249,6 +323,34 @@ export function AssessmentExamPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const selectOption = (question: AssessmentQuestion, optionId: string) => {
+    if (question.question_type === "single_choice") {
+      void saveAnswer(question, { option_id: optionId });
+      return;
+    }
+    if (question.question_type === "multi_choice") {
+      const current = question.answer && "option_ids" in question.answer
+        ? question.answer.option_ids
+        : [];
+      const selected = current.includes(optionId)
+        ? current.filter((id) => id !== optionId)
+        : [...current, optionId];
+      void saveAnswer(question, selected.length > 0 ? { option_ids: selected } : null);
+    }
+  };
+
+  const submitNumeric = (question: AssessmentQuestion) => {
+    const raw = numericDrafts[question.id] ?? (
+      question.answer && "value" in question.answer ? String(question.answer.value) : ""
+    );
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isFinite(value)) {
+      setSaveError("Enter a valid numeric answer before saving.");
+      return;
+    }
+    void saveAnswer(question, { value });
   };
 
   const navigateToQuestion = async (nextPosition: number) => {
@@ -317,6 +419,41 @@ export function AssessmentExamPage() {
     }
   };
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement
+        && (target.isContentEditable || target.closest("input, textarea, select, [contenteditable='true']"))
+      ) return;
+      if (!attempt || !currentQuestion || saving || remainingSeconds === 0) return;
+
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        void navigateToQuestion(attempt.current_position - 1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        void navigateToQuestion(attempt.current_position + 1);
+      } else if (event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        void toggleReview(currentQuestion);
+      } else if (currentQuestion.question_type !== "numeric") {
+        const index = /^[1-4]$/.test(event.key)
+          ? Number(event.key) - 1
+          : /^[a-d]$/i.test(event.key)
+            ? event.key.toUpperCase().charCodeAt(0) - 65
+            : -1;
+        const option = currentQuestion.options[index];
+        if (option) {
+          event.preventDefault();
+          selectOption(currentQuestion, option.id);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [attempt, currentQuestion, remainingSeconds, saving]);
+
   if (attemptQuery.isLoading) return <div className="exam-shell"><LoadingPanel message="Restoring your saved assessment…" /></div>;
   if (attemptQuery.isError) {
     return <div className="exam-shell"><ErrorPanel error={attemptQuery.error} onRetry={() => void attemptQuery.refetch()} /></div>;
@@ -352,22 +489,65 @@ export function AssessmentExamPage() {
             <span className="question-topic">{currentQuestion.topic}</span>
           </div>
           <h1>{currentQuestion.prompt}</h1>
-          <p className="question-hint">Choose one answer from the options below.</p>
-          <div className="answer-options" role="group" aria-label="Answer options">
-            {currentQuestion.options.map((option, index) => (
-              <button
-                key={option.id}
-                aria-pressed={currentQuestion.answer?.option_id === option.id}
-                className={`answer-option ${currentQuestion.answer?.option_id === option.id ? "selected" : ""}`}
-                disabled={saving || submitting || remainingSeconds === 0}
-                onClick={() => void saveOption(currentQuestion, option.id)}
-              >
-                <span className="option-key">{String.fromCharCode(65 + index)}</span>
-                <span>{option.text}</span>
-                {currentQuestion.answer?.option_id === option.id && <Check size={17} className="option-check" />}
-              </button>
-            ))}
-          </div>
+          <StimulusBlock stimulus={currentQuestion.stimulus} />
+          {currentQuestion.question_type === "numeric" ? (
+            <div className="numeric-answer">
+              <label htmlFor="numeric-response">Your numeric answer</label>
+              <div>
+                <input
+                  id="numeric-response"
+                  inputMode="decimal"
+                  value={numericDrafts[currentQuestion.id] ?? (
+                    currentQuestion.answer && "value" in currentQuestion.answer
+                      ? String(currentQuestion.answer.value)
+                      : ""
+                  )}
+                  disabled={saving || submitting || remainingSeconds === 0}
+                  onChange={(event) => setNumericDrafts((drafts) => ({
+                    ...drafts,
+                    [currentQuestion.id]: event.target.value,
+                  }))}
+                />
+                <button
+                  className="button button-primary"
+                  disabled={saving || submitting || remainingSeconds === 0}
+                  onClick={() => submitNumeric(currentQuestion)}
+                >
+                  Save answer
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="question-hint">
+                {currentQuestion.question_type === "multi_choice"
+                  ? "Select all answers that apply."
+                  : "Choose one answer from the options below."}
+              </p>
+              <div className="answer-options" role="group" aria-label="Answer options">
+                {currentQuestion.options.map((option, index) => {
+                  const selected = currentQuestion.answer && "option_id" in currentQuestion.answer
+                    ? currentQuestion.answer.option_id === option.id
+                    : currentQuestion.answer && "option_ids" in currentQuestion.answer
+                      ? currentQuestion.answer.option_ids.includes(option.id)
+                      : false;
+                  return (
+                    <button
+                      key={option.id}
+                      aria-pressed={selected}
+                      className={`answer-option ${selected ? "selected" : ""}`}
+                      disabled={saving || submitting || remainingSeconds === 0}
+                      onClick={() => selectOption(currentQuestion, option.id)}
+                    >
+                      <span className="option-key">{String.fromCharCode(65 + index)}</span>
+                      <span>{option.text}</span>
+                      {selected && <Check size={17} className="option-check" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
           {saving && <p className="assessment-save-status" role="status">Saving your response…</p>}
           {saveError && <p className="assessment-inline-error" role="alert">{saveError}</p>}
           <div className="question-actions">
@@ -446,6 +626,9 @@ export function AssessmentExamPage() {
 
 export function AssessmentResultsPage() {
   const { assessmentId: attemptId = "" } = useParams();
+  const navigate = useNavigate();
+  const [startingPractice, setStartingPractice] = useState(false);
+  const [practiceError, setPracticeError] = useState<string | null>(null);
   const resultQuery = useQuery({
     queryKey: ["assessment-result", attemptId],
     queryFn: () => getAssessmentResult(attemptId),
@@ -468,6 +651,21 @@ export function AssessmentResultsPage() {
     { name: "Incorrect", value: result.incorrect },
     { name: "Unanswered", value: result.unanswered },
   ];
+  const averageQuestionTime = total > 0
+    ? result.review.reduce((sum, question) => sum + question.time_spent_seconds, 0) / total
+    : 0;
+  const startWeakPractice = async () => {
+    setStartingPractice(true);
+    setPracticeError(null);
+    try {
+      const attempt = await startWeakTopicPractice(result.attempt_id);
+      navigate(`/exam/${attempt.id}`);
+    } catch (error) {
+      setPracticeError(errorMessage(error));
+    } finally {
+      setStartingPractice(false);
+    }
+  };
 
   return (
     <>
@@ -523,25 +721,61 @@ export function AssessmentResultsPage() {
           </div>
         </section>
       </div>
+      {result.topics.length > 0 && (
+        <section className="panel topic-performance-panel">
+          <div className="panel-heading">
+            <div><h2>Topic performance &amp; speed</h2><p>Accuracy and time spent, based on the saved question timings</p></div>
+          </div>
+          <div className="topic-matrix-wrap">
+            <table className="topic-matrix">
+              <thead><tr><th>Topic</th><th>Accuracy</th><th>Correct</th><th>Incorrect</th><th>Unanswered</th><th>Avg. time</th></tr></thead>
+              <tbody>
+                {result.topics.map((topic) => (
+                  <tr key={topic.topic}>
+                    <th scope="row">{topic.topic}</th>
+                    <td>{topic.accuracy_percent}%</td>
+                    <td>{topic.correct}</td>
+                    <td>{topic.incorrect}</td>
+                    <td>{topic.unanswered}</td>
+                    <td>{Math.round(topic.avg_time_seconds)} sec</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {practiceError && <p className="assessment-inline-error" role="alert">{practiceError}</p>}
+          <button
+            className="button button-primary weak-topics-cta"
+            disabled={startingPractice}
+            onClick={() => void startWeakPractice()}
+          >
+            {startingPractice ? "Preparing focused practice…" : "Practice my weakest topics"}
+            <ArrowRight size={16} />
+          </button>
+        </section>
+      )}
       <section className="panel answer-review-panel">
         <div className="panel-heading"><div><h2>Review your answers</h2><p>See released answers and explanations for this submitted attempt</p></div></div>
         <div className="answer-review-list">
           {result.review.map((question, index) => {
-            const selectedText = question.answer?.option_id
-              ? question.options.find((option) => option.id === question.answer?.option_id)?.text
-              : undefined;
-            const correctText = question.correct_answer?.option_id
-              ? question.options.find((option) => option.id === question.correct_answer?.option_id)?.text
-              : undefined;
+            const selectedText = formatAnswer(question.answer, question.options);
+            const correctText = formatAnswer(question.correct_answer, question.options);
             const status = question.is_correct === null
               ? question.answer ? "Answered" : "Unanswered"
               : question.is_correct ? "Correct" : "Incorrect";
             return (
               <article className="answer-review-item" key={question.question_id}>
-                <div className="answer-review-heading"><span>Q{index + 1} · {question.topic}</span><strong>{status}</strong></div>
+                <div className="answer-review-heading">
+                  <span>Q{index + 1} · {question.topic}</span>
+                  <strong>{status}</strong>
+                  {question.is_correct === false && question.time_spent_seconds > averageQuestionTime && (
+                    <span className="time-sink-badge">Time sink · {question.time_spent_seconds}s</span>
+                  )}
+                </div>
                 <p>{question.prompt}</p>
-                {question.answer && <small>Your answer: {selectedText ?? "Response saved"}</small>}
-                {question.correct_answer && <small>Correct answer: {correctText ?? "See options"}</small>}
+                <StimulusBlock stimulus={question.stimulus} />
+                {question.answer && <small>Your answer: {selectedText}</small>}
+                {question.correct_answer && <small>Correct answer: {correctText}</small>}
                 {question.explanation && <div className="answer-review-explanation">{question.explanation}</div>}
               </article>
             );
@@ -552,6 +786,18 @@ export function AssessmentResultsPage() {
       <p className="simulation-note"><ShieldCheck size={15} /> Your score is calculated by the assessment service and is not a prediction of placement or hiring outcomes.</p>
     </>
   );
+}
+
+function formatAnswer(
+  answer: AssessmentAnswer | null,
+  options: Array<{ id: string; text: string }>,
+): string {
+  if (!answer) return "";
+  if ("value" in answer) return String(answer.value);
+  const selectedIds = "option_id" in answer ? [answer.option_id] : answer.option_ids;
+  return selectedIds
+    .map((id) => options.find((option) => option.id === id)?.text ?? "Response saved")
+    .join(", ");
 }
 
 function BreakdownRow({ label, count, color }: { label: string; count: number; color: string }) {

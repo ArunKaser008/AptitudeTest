@@ -8,7 +8,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect, select
+from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -25,6 +25,7 @@ from app.models import (
     CandidateSession,
     QuestionVersion,
 )
+from app.schemas import AttemptResultOut
 
 
 @pytest.fixture
@@ -59,6 +60,7 @@ def add_published_assessment(
     pool_size: int = 4,
     question_count: int = 2,
     verified: bool = True,
+    question_type: str = "single_choice",
 ) -> Assessment:
     assessment = Assessment(
         id=uuid.uuid4(),
@@ -92,19 +94,27 @@ def add_published_assessment(
     db.flush()
     now = datetime.now(timezone.utc)
     for index in range(pool_size):
+        options = [
+            {"id": "correct", "text": str(index + 1)},
+            {"id": "incorrect", "text": str(index + 2)},
+        ] if question_type != "numeric" else []
+        if question_type == "multi_choice":
+            options.append({"id": "also-correct", "text": "Also correct"})
+            correct_answer = {"option_ids": ["correct", "also-correct"]}
+        elif question_type == "numeric":
+            correct_answer = {"value": index + 1, "tolerance": 0.1}
+        else:
+            correct_answer = {"option_id": "correct"}
         question = QuestionVersion(
             logical_id=uuid.uuid4(),
             version_number=1,
             status="published",
-            question_type="single_choice",
+            question_type=question_type,
             prompt=f"What is {index} + 1?",
             topic="Arithmetic",
             difficulty="easy",
-            options=[
-                {"id": "correct", "text": str(index + 1)},
-                {"id": "incorrect", "text": str(index + 2)},
-            ],
-            correct_answer={"option_id": "correct"},
+            options=options,
+            correct_answer=correct_answer,
             explanation="Add one to the number.",
             marks=2,
             negative_marks=0.5,
@@ -337,3 +347,316 @@ def test_alembic_core_migration_matches_registered_model_tables() -> None:
         assert migrated_tables == table_names
         command.check(migration_config)
     engine.dispose()
+
+
+def test_result_snapshot_has_backward_compatible_time_and_topic_defaults() -> None:
+    legacy_snapshot = {
+        "attempt_id": str(uuid.uuid4()),
+        "assessment_slug": "foundation",
+        "assessment_title": "Foundation Aptitude Test",
+        "status": "submitted",
+        "score": 1,
+        "max_score": 2,
+        "correct": 1,
+        "incorrect": 0,
+        "unanswered": 0,
+        "accuracy_percent": 100,
+        "attempt_rate_percent": 100,
+        "elapsed_seconds": 30,
+        "sections": [],
+        "review": [{
+            "question_id": str(uuid.uuid4()),
+            "position": 0,
+            "section": "Quantitative",
+            "topic": "Arithmetic",
+            "prompt": "What is 1 + 1?",
+            "options": [],
+            "answer": None,
+            "correct_answer": None,
+            "explanation": None,
+            "is_correct": None,
+        }],
+    }
+
+    result = AttemptResultOut.model_validate(legacy_snapshot)
+
+    assert result.review[0].time_spent_seconds == 0
+    assert result.topics == []
+
+
+def test_topic_diagnostics_aggregate_accuracy_and_question_time(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    add_published_assessment(db_session, pool_size=4, question_count=2)
+    token = create_candidate(client)
+    start = start_attempt(client, token)
+    attempt_id = start.json()["id"]
+    details = client.get(
+        f"/api/v1/attempts/{attempt_id}",
+        headers={"X-Candidate-Token": token},
+    ).json()
+    first = details["questions"][0]
+
+    saved = client.put(
+        f"/api/v1/attempts/{attempt_id}/responses/{first['id']}",
+        headers={"X-Candidate-Token": token},
+        json={"answer": {"option_id": "correct"}, "time_spent_seconds": 18},
+    )
+    assert saved.status_code == 200
+    result = client.post(
+        f"/api/v1/attempts/{attempt_id}/submit",
+        headers={"X-Candidate-Token": token},
+    )
+
+    assert result.status_code == 200
+    assert result.json()["review"][0]["time_spent_seconds"] == 18
+    assert result.json()["topics"] == [{
+        "topic": "Arithmetic",
+        "correct": 1,
+        "incorrect": 0,
+        "unanswered": 1,
+        "accuracy_percent": 100,
+        "avg_time_seconds": 9,
+    }]
+
+
+def test_submission_records_time_on_the_current_question(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    add_published_assessment(db_session, pool_size=4, question_count=2)
+    token = create_candidate(client)
+    headers = {"X-Candidate-Token": token}
+    attempt_id = start_attempt(client, token).json()["id"]
+    question = client.get(
+        f"/api/v1/attempts/{attempt_id}",
+        headers=headers,
+    ).json()["questions"][0]
+
+    result = client.post(
+        f"/api/v1/attempts/{attempt_id}/submit",
+        headers=headers,
+        json={"question_id": question["id"], "time_spent_seconds": 13},
+    )
+
+    assert result.status_code == 200
+    review = next(item for item in result.json()["review"] if item["position"] == question["position"])
+    assert review["time_spent_seconds"] == 13
+
+
+def test_weak_topic_practice_uses_candidate_diagnostics_and_is_idempotent(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    add_published_assessment(db_session, pool_size=4, question_count=2)
+    token = create_candidate(client)
+    headers = {"X-Candidate-Token": token}
+    source_id = start_attempt(client, token).json()["id"]
+    question = client.get(
+        f"/api/v1/attempts/{source_id}",
+        headers=headers,
+    ).json()["questions"][0]
+    client.put(
+        f"/api/v1/attempts/{source_id}/responses/{question['id']}",
+        headers=headers,
+        json={"answer": {"option_id": "incorrect"}, "time_spent_seconds": 25},
+    )
+    submitted = client.post(f"/api/v1/attempts/{source_id}/submit", headers=headers)
+    assert submitted.status_code == 200
+    assert submitted.json()["topics"][0]["accuracy_percent"] == 0
+
+    practice = client.post(
+        "/api/v1/practice-weak-topics",
+        headers={**headers, "Idempotency-Key": "weak-topic-drill-key-001"},
+        json={"source_attempt_id": source_id},
+    )
+    assert practice.status_code == 201
+    assert practice.json()["title"] == "Focused practice · Foundation Aptitude Test"
+    assert practice.json()["question_count"] == 4
+    repeat = client.post(
+        "/api/v1/practice-weak-topics",
+        headers={**headers, "Idempotency-Key": "weak-topic-drill-key-001"},
+        json={"source_attempt_id": source_id},
+    )
+    assert repeat.status_code == 201
+    assert repeat.json()["id"] == practice.json()["id"]
+
+
+@pytest.mark.parametrize(
+    ("question_type", "answer"),
+    [
+        ("multi_choice", {"option_ids": ["correct", "also-correct"]}),
+        ("numeric", {"value": 1.05}),
+    ],
+)
+def test_rich_question_types_accept_responses_and_score_correctly(
+    client: TestClient,
+    db_session: Session,
+    question_type: str,
+    answer: dict[str, object],
+) -> None:
+    add_published_assessment(
+        db_session,
+        pool_size=2,
+        question_count=1,
+        question_type=question_type,
+    )
+    token = create_candidate(client)
+    attempt_id = start_attempt(client, token).json()["id"]
+    question = client.get(
+        f"/api/v1/attempts/{attempt_id}",
+        headers={"X-Candidate-Token": token},
+    ).json()["questions"][0]
+    if question_type == "numeric":
+        assigned = db_session.get(AttemptQuestion, uuid.UUID(question["id"]))
+        assert assigned is not None
+        version = db_session.get(QuestionVersion, assigned.question_version_id)
+        assert version is not None
+        answer = {"value": version.correct_answer["value"] + 0.05}
+
+    saved = client.put(
+        f"/api/v1/attempts/{attempt_id}/responses/{question['id']}",
+        headers={"X-Candidate-Token": token},
+        json={"answer": answer, "time_spent_seconds": 10},
+    )
+    assert saved.status_code == 200
+    result = client.post(
+        f"/api/v1/attempts/{attempt_id}/submit",
+        headers={"X-Candidate-Token": token},
+    )
+
+    assert result.status_code == 200
+    assert result.json()["correct"] == 1
+    assert result.json()["score"] == 2
+
+
+def test_authoring_published_question_edit_forks_version_and_archive_is_soft(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    add_published_assessment(db_session)
+    original = db_session.scalar(select(QuestionVersion))
+    assert original is not None
+    payload = {
+        "question_type": "single_choice",
+        "prompt": "Updated arithmetic question?",
+        "topic": "Arithmetic",
+        "difficulty": "medium",
+        "options": [
+            {"id": "correct", "text": "2"},
+            {"id": "incorrect", "text": "3"},
+        ],
+        "correct_answer": {"option_id": "correct"},
+        "explanation": "The sum is two.",
+        "marks": 2,
+        "negative_marks": 0.5,
+    }
+
+    edited = client.put(f"/api/v1/authoring/questions/{original.id}", json=payload)
+
+    assert edited.status_code == 200
+    assert edited.json()["id"] != str(original.id)
+    assert edited.json()["logical_id"] == str(original.logical_id)
+    assert edited.json()["version_number"] == 2
+    assert edited.json()["status"] == "draft"
+    assert db_session.get(QuestionVersion, original.id).prompt == "What is 0 + 1?"
+
+    archived = client.post(f"/api/v1/authoring/questions/{original.id}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["active_pool_usage_count"] == 1
+    assert db_session.get(QuestionVersion, original.id).status == "archived"
+    assert db_session.scalar(select(AssessmentQuestionPool).where(
+        AssessmentQuestionPool.question_version_id == original.id
+    )) is not None
+
+
+def test_bulk_import_dry_run_reports_row_errors_without_writing(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    rows = [
+        {
+            "question_type": "single_choice",
+            "prompt": "What is 1 + 1?",
+            "topic": "Arithmetic",
+            "difficulty": "easy",
+            "options": [{"id": "two", "text": "2"}, {"id": "three", "text": "3"}],
+            "correct_answer": {"option_id": "two"},
+            "explanation": "Add the numbers.",
+        },
+        {
+            "question_type": "single_choice",
+            "prompt": "",
+            "topic": "Arithmetic",
+            "difficulty": "easy",
+            "options": [],
+            "correct_answer": {"option_id": "missing"},
+            "explanation": "",
+        },
+    ]
+
+    response = client.post("/api/v1/authoring/questions/bulk-import", json=rows)
+
+    assert response.status_code == 200
+    assert response.json()["dry_run"] is True
+    assert response.json()["valid_count"] == 1
+    assert response.json()["imported_count"] == 0
+    assert any(error["row_index"] == 2 for error in response.json()["errors"])
+    assert db_session.scalar(select(func.count()).select_from(QuestionVersion)) == 0
+
+
+def test_assessment_authoring_requires_ready_pools_before_publish(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    payload = {
+        "slug": "new-foundation",
+        "title": "New Foundation Assessment",
+        "duration_seconds": 600,
+        "show_explanations_after_submission": True,
+        "randomize_questions": True,
+        "randomize_options": True,
+        "scoring_policy": {"minimum_score_zero": True},
+        "sections": [{
+            "section_key": "quant",
+            "title": "Quantitative",
+            "position": 0,
+            "question_count": 1,
+            "marks_per_question": 1,
+            "negative_marks": 0,
+        }],
+    }
+    created = client.post("/api/v1/authoring/assessments", json=payload)
+    assert created.status_code == 201
+    assessment_id = created.json()["id"]
+    section_id = created.json()["sections"][0]["id"]
+    not_ready = client.post(f"/api/v1/authoring/assessments/{assessment_id}/publish")
+    assert not_ready.status_code == 409
+
+    question = client.post(
+        "/api/v1/authoring/questions",
+        json={
+            "question_type": "single_choice",
+            "prompt": "What is 1 + 1?",
+            "topic": "Arithmetic",
+            "difficulty": "easy",
+            "options": [{"id": "two", "text": "2"}, {"id": "three", "text": "3"}],
+            "correct_answer": {"option_id": "two"},
+            "explanation": "Add the numbers.",
+        },
+    )
+    question_id = question.json()["id"]
+    verified = client.post(f"/api/v1/authoring/questions/{question_id}/verify-publish")
+    assert verified.status_code == 200
+    pool = client.put(
+        f"/api/v1/authoring/sections/{section_id}/pool",
+        json={"question_version_ids": [question_id]},
+    )
+    assert pool.status_code == 200
+    assert pool.json()["eligible_verified_count"] == 1
+
+    published = client.post(f"/api/v1/authoring/assessments/{assessment_id}/publish")
+    assert published.status_code == 200
+    assert published.json()["status"] == "published"
+    assert published.json()["config_status"] == "published"
