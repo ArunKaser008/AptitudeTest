@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: aptitude
+      POSTGRES_USER: aptitude
+      POSTGRES_PASSWORD: aptitude
+    ports:
+      - "5433:5432"
+    volumes:
+      - aptitude_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aptitude -d aptitude"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ./backend
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://aptitude:aptitude@db:5432/aptitude
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://aptitude:aptitude@db:5432/aptitude
+      CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  aptitude_db:
