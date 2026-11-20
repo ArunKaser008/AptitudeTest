@@ -41,10 +41,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Link, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AssessmentCatalogPage, AssessmentExamPage, AssessmentResultsPage } from "./AssessmentFlow";
 import { AuthoringPage } from "./AuthoringFlow";
 import { PageHeading } from "./components/PageHeading";
+import { PlacementPortal } from "./PlacementPortal";
 import { allAssessmentQuestions, assessmentQuestionBanks } from "./data/assessmentQuestionBanks";
 import {
   assessments,
@@ -96,16 +97,31 @@ const navGroups = [
   },
   {
     label: "ADMINISTRATION",
-    links: [{ to: "/studio", label: "Assessment studio", icon: Settings }],
+    links: [
+      { to: "/studio", label: "Assessment studio", icon: Settings },
+      { to: "/placement", label: "Placement portal", icon: ShieldCheck },
+    ],
   },
 ];
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const location = useLocation();
+  const activeNavigation = navGroups
+    .flatMap((group) => group.links)
+    .find(({ to }) => location.pathname === to || location.pathname.startsWith(`${to}/`));
+  const currentPageLabel = activeNavigation?.label
+    ?? (location.pathname.startsWith("/exam/") ? "Assessment runner"
+      : location.pathname.startsWith("/results/") ? "Assessment results"
+        : "Placement readiness");
   const recommendationsQuery = useQuery({
     queryKey: ["candidate-recommendations"],
     queryFn: getCandidateRecommendations,
+    enabled: !location.pathname.startsWith("/placement"),
   });
+  if (location.pathname.startsWith("/placement")) {
+    return <Routes><Route path="/placement/*" element={<PlacementPortal />} /></Routes>;
+  }
   return (
     <div className="app-shell">
       {sidebarOpen && <button className="mobile-backdrop" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
@@ -152,7 +168,7 @@ function App() {
       <div className="main-column">
         <header className="topbar">
           <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button>
-          <div className="breadcrumb"><span>Student workspace</span><ChevronRight size={15} /><strong>Placement readiness</strong></div>
+          <div className="breadcrumb"><span>Student workspace</span><ChevronRight size={15} /><strong>{currentPageLabel}</strong></div>
           <div className="topbar-actions">
             <Link className="icon-button search-button" aria-label="Browse assessments" to="/aptitude"><Search size={18} /></Link>
             <a className="help-button" href="mailto:enroll@mentormuni.com"><CircleHelp size={17} /><span>Help centre</span></a>
@@ -174,6 +190,7 @@ function App() {
             <Route path="/mock-tests" element={<CompaniesPage />} />
             <Route path="/companies" element={<CompaniesPage />} />
             <Route path="/recommendations" element={<RecommendationsPage />} />
+            <Route path="/placement/*" element={<PlacementPortal />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>

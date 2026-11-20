@@ -652,3 +652,176 @@ table td { border-color: #263448; color: #d1dbe5; }
 .palette-answered-count { display: block; margin-top: 12px; color: #aebccd; font-size: 10px; text-align: center; }
 
 @keyframes assessment-spin { to { transform: rotate(360deg); } }
+
+:root {
+  --brand: #35add6;
+  --brand-dark: #258caf;
+  --surface: #111f2f;
+  --canvas: #091522;
+  --line: #2a3d51;
+}
+
+body {
+  background:
+    radial-gradient(ellipse at 82% 0%, #12628b1c, transparent 34rem),
+    radial-gradient(ellipse at 8% 68%, #185b4910, transparent 30rem),
+    #091522;
+}
+
+.sidebar {
+  width: 264px;
+  flex-basis: 264px;
+  padding: 25px 18px 18px;
+  border-color: #223448;
+  background: linear-gradient(180deg, #0d1928, #0b1624 72%);
+}
+
+.brand { gap: 12px; font-size: 20px; }
+.brand-mark { width: 40px; height: 40px; border: 1px solid #2c536b; border-radius: 12px; }
+.brand small { font-size: 9px; }
+.profile-switch { padding: 13px 10px; margin: 25px 0; border-radius: 13px; }
+.profile-copy strong { font-size: 13px; }
+.profile-copy span { font-size: 11px; }
+.nav-group { margin-bottom: 25px; }
+.nav-heading { margin: 0 10px 9px; font-size: 10px; }
+.nav-link { min-height: 44px; gap: 12px; border-radius: 10px; font-size: 13px; }
+.nav-link.active::before { left: -18px; }
+.mentor-card { padding: 17px 15px; border-radius: 14px; }
+.mentor-card strong { font-size: 12px; }
+.mentor-card p { font-size: 11px; }
+.mentor-card a, .sidebar-foot { font-size: 11px; }
+
+.topbar {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  height: 68px;
+  padding: 0 clamp(22px, 3.2vw, 48px);
+  border-color: #223448;
+  background: #0c1826eF;
+  backdrop-filter: blur(16px);
+}
+.breadcrumb { gap: 11px; font-size: 12px; }
+.topbar-actions { gap: 20px; }
+.help-button { font-size: 12px; }
+.top-avatar { width: 36px; height: 36px; font-size: 11px; }
+
+.page-content { padding: 38px clamp(22px, 3.2vw, 48px) 56px; }
+.page-heading { gap: 28px; margin-bottom: 27px; }
+.eyebrow { margin-bottom: 11px; font-size: 10px; letter-spacing: 1.3px; }
+.page-heading h1 { font-size: clamp(28px, 2.5vw, 36px); letter-spacing: -1px; }
+.page-description { max-width: 720px; margin-top: 10px; font-size: 14px; line-height: 1.65; }
+.button { min-height: 43px; padding: 0 17px; border-radius: 10px; font-size: 12px; }
+.button-primary { border-color: #efb64f; background: #efb64f; box-shadow: 0 6px 20px #dfa33324; }
+.button-primary:hover { border-color: #f5c56a; background: #f5c56a; }
+.button-outline { border-color: #354a60; background: #142235; }
+
+.readiness-banner {
+  min-height: 230px;
+  padding: 30px clamp(26px, 4vw, 56px);
+  border-radius: 18px;
+  background: linear-gradient(112deg, #10243a 0%, #123149 65%, #16404c 100%);
+  box-shadow: 0 18px 48px #00000028, inset 0 1px #ffffff0a;
+}
+.banner-label { font-size: 10px; }
+.readiness-number { font-size: 56px; }
+.readiness-copy p { font-size: 13px; }
+.banner-link { font-size: 12px; }
+.score-ring { width: 136px; height: 136px; }
+.floating-chip { padding: 9px 11px; border-radius: 10px; font-size: 10px; }
+.metric-grid { gap: 16px; margin: 18px 0; }
+.metric-card {
+  min-height: 142px;
+  padding: 18px;
+  border-radius: 14px;
+  background: linear-gradient(150deg, #122133, #101c2a);
+  box-shadow: inset 0 1px #ffffff07, 0 8px 24px #00000015;
+}
+.metric-icon { width: 36px; height: 36px; margin-bottom: 12px; border-radius: 10px; }
+.metric-label, .metric-note { font-size: 11px; }
+.metric-value { margin-top: 5px; font-size: 25px; }
+
+.content-grid { gap: 17px; }
+.dashboard-grid, .lower-grid { margin-top: 17px; }
+.panel {
+  padding: 23px;
+  border-radius: 15px;
+  background: linear-gradient(150deg, #111f2f, #101b29);
+  box-shadow: inset 0 1px #ffffff06, 0 8px 28px #00000016;
+}
+.panel-heading h2 { font-size: 17px; }
+.panel-heading p { margin-top: 7px; font-size: 12px; }
+.chart-legend { gap: 19px; margin-top: 22px; font-size: 11px; }
+.trend-chart { height: 195px; }
+.section-list { gap: 19px; margin-top: 27px; }
+.section-score-top, .section-score-top strong { font-size: 12px; }
+.progress-track { height: 7px; }
+.recommendation-row { gap: 13px; padding: 14px 0; }
+.rec-icon { width: 40px; height: 40px; border-radius: 11px; }
+.rec-copy { gap: 4px; }
+.rec-copy strong { font-size: 12px; }
+.rec-copy span { font-size: 11px; }
+.rec-copy small { font-size: 10px; }
+.text-link { font-size: 11px; }
+.continue-panel h2 { margin-top: 17px; font-size: 17px; }
+.continue-panel > p { font-size: 12px; line-height: 1.6; }
+.journey-strip { gap: 12px; padding: 14px 17px; border-radius: 12px; }
+.journey-strip strong { font-size: 12px; }
+.journey-strip small { font-size: 11px; }
+
+.assessment-card, .company-card {
+  padding: 21px;
+  border-radius: 15px;
+  background: linear-gradient(150deg, #122133, #101c2a);
+}
+.assessment-card h3, .company-card h3 { font-size: 17px; }
+.assessment-description, .company-card > p { font-size: 12px; line-height: 1.65; }
+.assessment-meta, .company-detail { font-size: 11px; }
+.topic-chip { padding: 5px 8px; border-radius: 7px; font-size: 10px; }
+.badge { min-height: 25px; padding: 0 10px; font-size: 10px; }
+.callout { padding: 16px 18px; border-radius: 13px; }
+.callout strong { font-size: 12px; }
+.callout small { font-size: 11px; }
+.catalog-toolbar, .company-toolbar { margin: 29px 0 17px; }
+.catalog-toolbar h2, .company-toolbar h2 { font-size: 18px; }
+.catalog-toolbar p, .company-toolbar p { font-size: 12px; }
+.empty-state { gap: 12px; padding: 38px 22px; }
+.empty-state > strong { font-size: 16px; }
+.empty-state > span { max-width: 560px; font-size: 12px; line-height: 1.7; }
+.assessment-state { padding: 26px; border-radius: 15px; font-size: 13px; }
+.assessment-state > strong { font-size: 16px; }
+
+@media (max-width: 1120px) {
+  .sidebar { width: 238px; flex-basis: 238px; }
+  .metric-grid { gap: 12px; }
+  .metric-card { padding: 15px; }
+}
+
+@media (max-width: 880px) {
+  .sidebar { position: fixed; width: 280px; }
+  .topbar { padding-right: 22px; padding-left: 22px; }
+  .page-content { padding: 30px 24px 44px; }
+}
+
+@media (max-width: 620px) {
+  .topbar { height: 60px; padding: 0 15px; }
+  .breadcrumb { font-size: 11px; }
+  .page-content { padding: 26px 16px 38px; }
+  .page-heading h1 { font-size: 27px; }
+  .page-description { font-size: 13px; }
+  .readiness-banner { padding: 23px; border-radius: 15px; }
+  .readiness-number { font-size: 48px; }
+  .metric-grid { gap: 10px; }
+  .metric-card { min-height: 126px; padding: 13px; }
+  .metric-label, .metric-note { font-size: 10px; }
+  .metric-value { font-size: 21px; }
+  .panel { padding: 18px; border-radius: 13px; }
+  .panel-heading h2 { font-size: 16px; }
+  .panel-heading p { font-size: 11px; }
+  .trend-chart { height: 170px; }
+  .callout strong { font-size: 11px; }
+  .callout small { font-size: 10px; }
+  .assessment-card, .company-card { padding: 18px; }
+  .assessment-card h3, .company-card h3 { font-size: 16px; }
+  .assessment-description, .company-card > p { font-size: 11px; }
+}

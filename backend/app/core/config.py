@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 30
     ai_generation_max_retries: int = 3
     seed_default_assessments: bool = False
+    placement_auth_secret: str = "development-only-placement-secret-change-me"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -28,6 +29,8 @@ class Settings(BaseSettings):
             raise ValueError("LLM_TIMEOUT_SECONDS must be between 1 and 120.")
         if not 1 <= self.ai_generation_max_retries <= 5:
             raise ValueError("AI_GENERATION_MAX_RETRIES must be between 1 and 5.")
+        if len(self.placement_auth_secret) < 32:
+            raise ValueError("PLACEMENT_AUTH_SECRET must contain at least 32 characters.")
         if self.environment.lower() in {"production", "prod"}:
             if "localhost" in self.database_url or "127.0.0.1" in self.database_url:
                 raise ValueError("Production DATABASE_URL must not point to localhost.")
@@ -35,6 +38,8 @@ class Settings(BaseSettings):
                 raise ValueError("Production CORS_ORIGINS must contain explicit trusted origins.")
             if "aptitude:aptitude@" in self.database_url:
                 raise ValueError("The development database credentials are not allowed in production.")
+            if self.placement_auth_secret == "development-only-placement-secret-change-me":
+                raise ValueError("Production must configure a unique PLACEMENT_AUTH_SECRET.")
         return self
 
 

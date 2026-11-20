@@ -38,6 +38,7 @@ services:
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
       AI_GENERATION_MAX_RETRIES: ${AI_GENERATION_MAX_RETRIES:-3}
       SEED_DEFAULT_ASSESSMENTS: ${SEED_DEFAULT_ASSESSMENTS:-false}
+      PLACEMENT_AUTH_SECRET: ${PLACEMENT_AUTH_SECRET:-development-only-placement-secret-change-me}
     ports:
       - "8000:8000"
     depends_on:

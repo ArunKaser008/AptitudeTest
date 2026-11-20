@@ -8,7 +8,8 @@ MentorMuni Placement Aptitude is a placement-readiness assessment product organi
 - The FastAPI + PostgreSQL backend supports versioned assessments and questions, verified question pools, CSV/JSON imports, multi-choice and numeric questions, immutable result snapshots, and weak-topic practice.
 - Dashboard, practice-zone, analytics, company-simulation, and recommendation areas still include sample data; do not treat them as candidate evaluation records.
 - A fresh database intentionally has no published assessments. Create and review content in `/aptitude/manage` before publishing.
-- **Deployment boundary:** authoring APIs and the `/aptitude/manage` workspace do not have authentication/authorization yet. Keep them private and do not expose this service publicly until admin access controls are implemented.
+- The separate `/placement` portal provides bearer-token login, tenant-scoped college workspaces, question review, test generation/import, cohort assignments, student test attempts, and submitted-attempt analytics. It does not replace the existing candidate assessment routes.
+- **Deployment boundary:** the legacy authoring APIs and `/aptitude/manage` workspace do not have authentication/authorization yet. Keep the legacy authoring surface private; use `/placement` for role-protected placement authoring.
 
 ## Run locally
 
@@ -30,6 +31,24 @@ npm run dev
 The web app is at `http://localhost:5173`; FastAPI and its interactive docs are at `http://localhost:8000` and `http://localhost:8000/docs`.
 Compose waits for PostgreSQL, applies Alembic migrations, and then starts the API. The assessment catalog will show an empty state until verified question content and a published assessment are loaded; no sample assessment data is seeded.
 The database is exposed on host port `5433` to avoid colliding with an existing local PostgreSQL service. The API container connects to PostgreSQL over the Compose network.
+
+## Placement portal setup
+
+The placement portal is available at `http://localhost:5173/placement`. It uses a separate placement bearer token stored for the current browser session; it does not reuse candidate-session tokens.
+
+After Compose has started, create the initial platform administrator from PowerShell:
+
+```powershell
+$env:PLATFORM_ADMIN_EMAIL = "admin@example.com"
+$env:PLATFORM_ADMIN_PASSWORD = "<use-a-unique-password-of-at-least-12-characters>"
+docker compose exec -e PLATFORM_ADMIN_EMAIL -e PLATFORM_ADMIN_PASSWORD api python -m app.placement_seed
+Remove-Item Env:PLATFORM_ADMIN_EMAIL
+Remove-Item Env:PLATFORM_ADMIN_PASSWORD
+```
+
+Sign in at `/placement`, create a college and batch, then provision college-admin or student accounts. College admins can create and review questions, generate or extract draft content, publish tests, and assign them to cohorts. Students can start assigned tests, save answers, submit, and review their score, topic timing, and solutions. Set a unique `PLACEMENT_AUTH_SECRET` in `.env` before deployment; production configuration rejects the development secret.
+
+Question extraction accepts pasted text or PDF, DOCX, CSV, and TXT uploads (up to 10 MB). Generated/imported questions remain drafts until a human approves them. Configure `LLM_API_KEY` for hosted structured generation; without it, the deterministic generator supports local development.
 
 Run frontend validation:
 
